@@ -14,9 +14,12 @@ const publicRoutes = require('./src/routes/public');
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Middleware
+// CORS: allow env CORS_ORIGINS (comma-separated) in production, else localhost
+const corsOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+    : ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5001'];
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5001'],
+    origin: corsOrigins,
     credentials: true,
 }));
 app.use(express.json());
