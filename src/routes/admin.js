@@ -1,12 +1,16 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const School = require('../models/School');
 const User = require('../models/User');
 const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
 const Followup = require('../models/Followup');
+const FormQuestion = require('../models/FormQuestion');
 const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
+const InquirySubmission = require('../models/InquirySubmission');
+const TourBooking = require('../models/TourBooking');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
@@ -60,10 +64,10 @@ router.get('/dashboard', async (req, res) => {
 
         res.json({
             metrics: [
-                { label: 'Total Schools', value: totalSchools, change: Math.round((activeSchools / Math.max(totalSchools, 1)) * 100) },
-                { label: 'Total Calls', value: totalCalls, change: 12 },
-                { label: 'Inquiry Calls', value: inquiryCalls, change: 8 },
-                { label: 'Followups Sent', value: sentFollowups, change: 15 },
+                { label: 'Total Schools', value: totalSchools },
+                { label: 'Total Calls', value: totalCalls },
+                { label: 'Inquiry Calls', value: inquiryCalls },
+                { label: 'Followups Sent', value: sentFollowups },
             ],
             recentCalls: formattedCalls,
             recentFollowups: formattedFollowups,
@@ -89,11 +93,17 @@ router.get('/schools', async (req, res) => {
         const schools = await School.find().sort({ createdAt: -1 }).lean();
 
         // Get call counts and followup counts per school
+        const referralLinks = await ReferralLink.find().lean();
+        const schoolIdToCode = {};
+        referralLinks.forEach(rl => { schoolIdToCode[rl.schoolId.toString()] = rl.code; });
+
+        const TourBooking = require('../models/TourBooking');
         const formatted = await Promise.all(
             schools.map(async (s) => {
                 const calls = await CallLog.countDocuments({ schoolId: s._id });
                 const inquiryCalls = await CallLog.countDocuments({ schoolId: s._id, callType: 'inquiry' });
                 const followupsSent = await Followup.countDocuments({ schoolId: s._id, status: 'sent' });
+                const tours = await TourBooking.countDocuments({ schoolId: s._id });
 
                 return {
                     id: s._id.toString(),
@@ -104,8 +114,9 @@ router.get('/schools', async (req, res) => {
                     language: s.language,
                     calls,
                     inquiryCalls,
-                    tours: Math.floor(inquiryCalls * 0.26),
+                    tours,
                     followupsSent,
+                    referralCode: schoolIdToCode[s._id.toString()] || null,
                     createdAt: s.createdAt,
                 };
             })
@@ -118,22 +129,20 @@ router.get('/schools', async (req, res) => {
     }
 });
 
-// POST /api/admin/schools - Create a new school + user credentials
+// POST /api/admin/schools - Create a new school + user credentials. Optional referralCode links to referrer.
 router.post('/schools', async (req, res) => {
     try {
-        const { name, email, password, aiNumber, routingNumber } = req.body;
+        const { name, email, password, aiNumber, routingNumber, referralCode, referrerSchoolId } = req.body;
 
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'Name, email, and password are required' });
         }
 
-        // Check if email already exists
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ error: 'A user with this email already exists' });
         }
 
-        // Create school
         const school = await School.create({
             name,
             aiNumber: aiNumber || '',
@@ -141,7 +150,6 @@ router.post('/schools', async (req, res) => {
             status: 'active',
         });
 
-        // Create school user
         const passwordHash = bcrypt.hashSync(password, 10);
         await User.create({
             email,
@@ -151,18 +159,54 @@ router.post('/schools', async (req, res) => {
             schoolId: school._id,
         });
 
-        // Create default integrations
         await Integration.insertMany([
             { schoolId: school._id, type: 'outlook', name: 'Microsoft Outlook', connected: false },
             { schoolId: school._id, type: 'google', name: 'Google Workspace', connected: false },
         ]);
 
-        // Create referral link
-        const refCode = `ref-${name.toLowerCase().replace(/\s+/g, '-')}`;
+        const refCode = `ref-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now().toString(36)}`;
         await ReferralLink.create({ schoolId: school._id, code: refCode });
+
+        let referralLinked = false;
+        const refId = referrerSchoolId && mongoose.Types.ObjectId.isValid(referrerSchoolId) ? referrerSchoolId : null;
+        const refCodeTrim = referralCode && String(referralCode).trim() ? String(referralCode).trim() : null;
+
+        if (refId) {
+            const referrerSchool = await School.findById(refId).select('name').lean();
+            const link = await ReferralLink.findOne({ schoolId: refId }).lean();
+            if (referrerSchool && link) {
+                await Referral.create({
+                    referrerSchoolId: refId,
+                    referrerSchoolName: referrerSchool.name,
+                    referredSchoolId: school._id,
+                    newSchoolName: name,
+                    referralCode: link.code,
+                    status: 'converted',
+                });
+                referralLinked = true;
+            }
+        } else if (refCodeTrim) {
+            const link = await ReferralLink.findOne({ code: new RegExp(`^${refCodeTrim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).populate('schoolId', 'name').lean();
+            if (link && link.schoolId) {
+                await Referral.create({
+                    referrerSchoolId: link.schoolId._id,
+                    referrerSchoolName: link.schoolId.name,
+                    referredSchoolId: school._id,
+                    newSchoolName: name,
+                    referralCode: link.code,
+                    status: 'converted',
+                });
+                referralLinked = true;
+            }
+        }
+
+        if ((refId || refCodeTrim) && !referralLinked) {
+            console.warn('[Admin] Create school: referral code/school not found:', refCodeTrim || refId);
+        }
 
         res.status(201).json({
             message: 'School created successfully',
+            referralLinked,
             school: {
                 id: school._id.toString(),
                 name,
@@ -202,27 +246,33 @@ router.put('/schools/:id', async (req, res) => {
     }
 });
 
-// DELETE /api/admin/schools/:id - Delete school
+// DELETE /api/admin/schools/:id - Delete school and all related data from DB
 router.delete('/schools/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid school ID' });
+        }
 
         const school = await School.findById(id);
         if (!school) {
             return res.status(404).json({ error: 'School not found' });
         }
 
-        // Delete all related data
+        const objectId = new mongoose.Types.ObjectId(id);
         await Promise.all([
-            User.deleteMany({ schoolId: id }),
-            CallLog.deleteMany({ schoolId: id }),
-            Integration.deleteMany({ schoolId: id }),
-            Followup.deleteMany({ schoolId: id }),
-            FormQuestion.deleteMany({ schoolId: id }),
-            Referral.deleteMany({ referrerSchoolId: id }),
-            ReferralLink.deleteMany({ schoolId: id }),
-            School.findByIdAndDelete(id),
+            User.deleteMany({ schoolId: objectId }),
+            CallLog.deleteMany({ schoolId: objectId }),
+            Integration.deleteMany({ schoolId: objectId }),
+            Followup.deleteMany({ schoolId: objectId }),
+            FormQuestion.deleteMany({ schoolId: objectId }),
+            Referral.deleteMany({ referrerSchoolId: objectId }),
+            Referral.deleteMany({ referredSchoolId: objectId }),
+            ReferralLink.deleteMany({ schoolId: objectId }),
+            InquirySubmission.deleteMany({ schoolId: objectId }),
+            TourBooking.deleteMany({ schoolId: objectId }),
         ]);
+        await School.findByIdAndDelete(id);
 
         res.json({ message: 'School deleted successfully' });
     } catch (err) {
@@ -349,13 +399,14 @@ router.get('/integrations', async (req, res) => {
 router.get('/referrals', async (req, res) => {
     try {
         const referrals = await Referral.find()
-            .sort({ date: -1 })
+            .sort({ createdAt: -1 })
             .lean();
 
         const formatted = referrals.map(r => ({
             id: r._id.toString(),
             referrerSchool: r.referrerSchoolName,
             newSchool: r.newSchoolName,
+            referredSchoolId: r.referredSchoolId?.toString() || null,
             date: r.date,
             status: r.status,
         }));

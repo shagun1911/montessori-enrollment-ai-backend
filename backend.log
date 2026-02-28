@@ -1,0 +1,16 @@
+
+> montessori-enrollment-ai-backend@1.0.0 start
+> node server.js
+
+✅ Connected to MongoDB
+ℹ️  Database already seeded, skipping...
+
+🚀 Montessori Enrollment AI Backend
+   Server running on http://localhost:5001
+   Database: MongoDB
+   API Health: http://localhost:5001/api/health
+
+📋 Default Credentials:
+   Admin: admin@enrollmentai.com / admin123
+   School: sunshine@school.com / school123
+
