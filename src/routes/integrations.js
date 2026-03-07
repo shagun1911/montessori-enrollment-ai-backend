@@ -92,9 +92,13 @@ router.get('/google/callback', async (req, res) => {
 
 // ── Outlook OAuth Callback ──
 router.get('/outlook/callback', async (req, res) => {
-    const { code, state } = req.query;
+    const { code, state, error, error_description } = req.query;
+    if (error) {
+        console.error('Outlook OAuth error:', error, error_description);
+        return res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
+    }
     if (!code || !state) {
-        return res.status(400).send('Missing code or state');
+        return res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
     }
 
     try {

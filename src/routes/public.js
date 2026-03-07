@@ -7,6 +7,8 @@ const User = require('../models/User');
 const Integration = require('../models/Integration');
 const ReferralLink = require('../models/ReferralLink');
 const Referral = require('../models/Referral');
+const TourBooking = require('../models/TourBooking');
+const { createCalendarEvent, getFreeSlots, isSlotAvailable } = require('../services/calendarService');
 
 const router = express.Router();
 
@@ -73,6 +75,114 @@ router.post('/inquiry/:schoolId/submit', async (req, res) => {
         });
     } catch (err) {
         console.error('Public inquiry submit error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/public/book-tour/:schoolId - Get school info + business hours for booking page
+router.get('/book-tour/:schoolId', async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({ error: 'Invalid school ID' });
+        }
+        const school = await School.findById(schoolId).select('name businessHoursStart businessHoursEnd').lean();
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+        const integration = await Integration.findOne({ schoolId, connected: true, type: { $in: ['google', 'outlook'] } }).lean();
+        res.json({
+            schoolName: school.name,
+            businessHoursStart: school.businessHoursStart || '09:00',
+            businessHoursEnd: school.businessHoursEnd || '17:00',
+            calendarConnected: !!integration,
+            calendarProvider: integration?.type || null,
+        });
+    } catch (err) {
+        console.error('Book tour info error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/public/book-tour/:schoolId/slots?date=YYYY-MM-DD - Free 15-min slots
+router.get('/book-tour/:schoolId/slots', async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        const { date } = req.query;
+        if (!mongoose.Types.ObjectId.isValid(schoolId) || !date) {
+            return res.status(400).json({ error: 'schoolId and date (YYYY-MM-DD) are required' });
+        }
+        const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd').lean();
+        if (!school) return res.status(404).json({ error: 'School not found' });
+
+        const { freeSlots, error } = await getFreeSlots(schoolId, date, {
+            start: school.businessHoursStart || '09:00',
+            end: school.businessHoursEnd || '17:00',
+        });
+        if (error) return res.status(400).json({ error });
+        res.json({ date, freeSlots });
+    } catch (err) {
+        console.error('Tour slots error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/public/book-tour/:schoolId - Book a tour (no auth). Creates TourBooking + calendar event.
+router.post('/book-tour/:schoolId', async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({ error: 'Invalid school ID' });
+        }
+        const school = await School.findById(schoolId).select('name').lean();
+        if (!school) return res.status(404).json({ error: 'School not found' });
+
+        const { parentName, email, phone, childAge, reason, scheduledAt } = req.body || {};
+        if (!parentName?.trim() || !scheduledAt) {
+            return res.status(400).json({ error: 'Parent name and scheduledAt are required' });
+        }
+
+        const start = new Date(scheduledAt);
+        if (isNaN(start.getTime())) {
+            return res.status(400).json({ error: 'Invalid date/time' });
+        }
+        const end = new Date(start.getTime() + 15 * 60 * 1000);
+
+        const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
+        if (!available) {
+            return res.status(409).json({ error: slotError || 'This time slot is no longer available.' });
+        }
+
+        const title = `School Tour – ${parentName.trim()}`;
+        const calResult = await createCalendarEvent(schoolId, {
+            title,
+            startDateTime: start,
+            endDateTime: end,
+            description: `Tour for ${parentName.trim()}. Phone: ${phone || 'N/A'}. Email: ${email || 'N/A'}. Reason: ${reason || 'Inquiry'}.`,
+        });
+
+        const booking = await TourBooking.create({
+            schoolId,
+            parentName: parentName.trim(),
+            phone: phone || '',
+            email: email || '',
+            childAge: childAge || '',
+            reason: reason || '',
+            scheduledAt: start,
+            calendarEventId: calResult.success ? calResult.eventId : '',
+            calendarProvider: calResult.success ? calResult.provider : '',
+        });
+
+        res.status(201).json({
+            message: 'Tour booked successfully!',
+            booking: {
+                id: booking._id.toString(),
+                scheduledAt: booking.scheduledAt,
+                calendarProvider: calResult.success ? calResult.provider : null,
+            },
+        });
+    } catch (err) {
+        console.error('Book tour error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
