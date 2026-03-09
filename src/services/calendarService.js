@@ -245,11 +245,12 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
         if (!accessToken) {
             return { success: false, error: 'Outlook not authorized. Reconnect in Integrations.' };
         }
+        const fmtDate = (d) => d.toISOString().replace('Z', '').replace(/\.000$/, '');
         const event = {
             subject: title,
             body: { contentType: 'text', content: description || '' },
-            start: { dateTime: start.toISOString(), timeZone: 'UTC' },
-            end: { dateTime: end.toISOString(), timeZone: 'UTC' },
+            start: { dateTime: fmtDate(start), timeZone: 'UTC' },
+            end: { dateTime: fmtDate(end), timeZone: 'UTC' },
         };
         const res = await axios.post(
             'https://graph.microsoft.com/v1.0/me/events',
