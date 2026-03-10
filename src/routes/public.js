@@ -86,17 +86,35 @@ router.get('/book-tour/:schoolId', async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(schoolId)) {
             return res.status(400).json({ error: 'Invalid school ID' });
         }
-        const school = await School.findById(schoolId).select('name businessHoursStart businessHoursEnd').lean();
+        const school = await School.findById(schoolId).select('name businessHoursStart businessHoursEnd preferredCalendar').lean();
         if (!school) {
             return res.status(404).json({ error: 'School not found' });
         }
-        const integration = await Integration.findOne({ schoolId, connected: true, type: { $in: ['google', 'outlook'] } }).lean();
+
+        const preference = school.preferredCalendar || 'google';
+        const integrationCriteria = { schoolId, connected: true };
+        if (preference === 'google') integrationCriteria.type = 'google';
+        else if (preference === 'outlook') integrationCriteria.type = 'outlook';
+        else if (preference === 'both') integrationCriteria.type = { $in: ['google', 'outlook'] };
+        else if (preference === 'none') {
+            return res.json({
+                schoolName: school.name,
+                businessHoursStart: school.businessHoursStart || '09:00',
+                businessHoursEnd: school.businessHoursEnd || '17:00',
+                calendarConnected: false,
+                calendarProvider: 'none',
+            });
+        }
+
+        const integrations = await Integration.find(integrationCriteria).lean();
+        const connected = integrations.length > 0;
+
         res.json({
             schoolName: school.name,
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
-            calendarConnected: !!integration,
-            calendarProvider: integration?.type || null,
+            calendarConnected: connected,
+            calendarProvider: preference, // Return the preference as the provider info
         });
     } catch (err) {
         console.error('Book tour info error:', err);

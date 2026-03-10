@@ -23,7 +23,9 @@ const schoolSchema = new mongoose.Schema({
     qaPairs: [{
         question: { type: String, default: '' },
         answer: { type: String, default: '' }
-    }]
+    }],
+    preferredCalendar: { type: String, enum: ['google', 'outlook', 'both', 'none'], default: 'google' },
+    address: { type: String, default: '' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);

@@ -30,21 +30,31 @@ async function getBusySlots(schoolId, startDate, endDate) {
     const end = endDate instanceof Date ? endDate : new Date(endDate);
     const busySlots = [];
 
-    const integration = await Integration.findOne({
+    const School = require('../models/School');
+    const school = await School.findById(schoolId).select('preferredCalendar').lean();
+    const preference = school?.preferredCalendar || 'google';
+
+    const integrationCriteria = {
         schoolId,
         connected: true,
         type: { $in: ['google', 'outlook'] },
-    }).sort({ type: 1 }).lean();
+    };
 
-    if (integration) {
+    if (preference === 'google') integrationCriteria.type = 'google';
+    else if (preference === 'outlook') integrationCriteria.type = 'outlook';
+    else if (preference === 'none') return { busySlots };
+
+    const integrations = await Integration.find(integrationCriteria).lean();
+
+    for (const integration of integrations) {
         if (integration.type === 'google') {
             const result = await getGoogleBusySlots(integration, start, end);
-            if (result.error) return { busySlots: [], error: result.error };
-            busySlots.push(...result.busySlots);
+            if (result.error) console.error('[Calendar] Error fetching Google busy slots:', result.error);
+            else busySlots.push(...result.busySlots);
         } else if (integration.type === 'outlook') {
             const result = await getOutlookBusySlots(integration, start, end);
-            if (result.error) return { busySlots: [], error: result.error };
-            busySlots.push(...result.busySlots);
+            if (result.error) console.error('[Calendar] Error fetching Outlook busy slots:', result.error);
+            else busySlots.push(...result.busySlots);
         }
     }
 
@@ -68,7 +78,18 @@ async function getGoogleBusySlots(integration, start, end) {
         const oauth2Client = createGoogleOAuthClient();
         const tokens = integration.config?.tokens;
         if (!tokens?.access_token) return { busySlots: [], error: 'Google not authorized' };
+
         oauth2Client.setCredentials(tokens);
+
+        // Listen for refreshed tokens
+        oauth2Client.on('tokens', async (newTokens) => {
+            console.log('[Calendar] Google tokens refreshed for school:', integration.schoolId);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { 'config.tokens': { ...tokens, ...newTokens } } }
+            );
+        });
+
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
         const res = await calendar.events.list({
             calendarId: 'primary',
@@ -192,23 +213,59 @@ async function createCalendarEvent(schoolId, opts) {
         return { success: false, error: 'Invalid title or date range' };
     }
 
-    const integration = await Integration.findOne({
+    const School = require('../models/School');
+    const school = await School.findById(schoolId).select('preferredCalendar').lean();
+    const preference = school?.preferredCalendar || 'google';
+
+    if (preference === 'none') {
+        return { success: true, message: 'Calendar sync disabled' };
+    }
+
+    const integrationCriteria = {
         schoolId,
         connected: true,
-        type: { $in: ['google', 'outlook'] },
-    }).sort({ type: 1 }).lean(); // prefer google (alphabetically first)
+        type: { $in: ['google', 'outlook'] }
+    };
 
-    if (!integration) {
-        return { success: false, error: 'No calendar connected. Connect Google or Outlook in Integrations.' };
+    if (preference === 'google') integrationCriteria.type = 'google';
+    else if (preference === 'outlook') integrationCriteria.type = 'outlook';
+
+    const integrations = await Integration.find(integrationCriteria).lean();
+
+    if (!integrations || integrations.length === 0) {
+        console.warn('[Calendar] No connected integration found for preference:', preference);
+        return { success: false, error: 'Calendar provider not connected or mismatched preference.' };
     }
 
-    if (integration.type === 'google') {
-        return createGoogleCalendarEvent(integration, { title, start, end, description });
+    let overallSuccess = false;
+    let mainProvider = null;
+    let mainEventId = null;
+    let errors = [];
+
+    for (const integration of integrations) {
+        let result;
+        if (integration.type === 'google') {
+            result = await createGoogleCalendarEvent(integration, { title, start, end, description });
+        } else if (integration.type === 'outlook') {
+            result = await createOutlookCalendarEvent(integration, { title, start, end, description });
+        }
+
+        if (result && result.success) {
+            overallSuccess = true;
+            if (!mainEventId) {
+                mainEventId = result.eventId;
+                mainProvider = integration.type;
+            }
+        } else if (result && result.error) {
+            errors.push(`${integration.type}: ${result.error}`);
+        }
     }
-    if (integration.type === 'outlook') {
-        return createOutlookCalendarEvent(integration, { title, start, end, description });
+
+    if (overallSuccess) {
+        return { success: true, eventId: mainEventId, provider: mainProvider };
+    } else {
+        return { success: false, error: errors.join(', ') || 'Failed to create calendar event' };
     }
-    return { success: false, error: 'Unsupported calendar provider' };
 }
 
 async function createGoogleCalendarEvent(integration, { title, start, end, description }) {
@@ -220,21 +277,31 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
         }
         oauth2Client.setCredentials(tokens);
 
+        // Listen for refreshed tokens
+        oauth2Client.on('tokens', async (newTokens) => {
+            console.log('[Calendar] Google tokens refreshed (during event creation) for school:', integration.schoolId);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { 'config.tokens': { ...tokens, ...newTokens } } }
+            );
+        });
+
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
         const event = {
             summary: title,
             description: description || '',
-            start: { dateTime: start.toISOString(), timeZone: 'UTC' },
-            end: { dateTime: end.toISOString(), timeZone: 'UTC' },
+            start: { dateTime: start.toISOString() },
+            end: { dateTime: end.toISOString() },
         };
         const res = await calendar.events.insert({
             calendarId: 'primary',
             requestBody: event,
         });
         const eventId = res.data.id || '';
+        console.log('[Calendar] Google event created:', eventId);
         return { success: true, eventId, provider: 'google' };
     } catch (err) {
-        console.error('[Calendar] Google error:', err.message);
+        console.error('[Calendar] Google creation error:', err.message);
         return { success: false, error: err.message || 'Failed to create Google Calendar event' };
     }
 }

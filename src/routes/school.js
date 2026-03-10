@@ -24,34 +24,55 @@ router.get('/dashboard', async (req, res) => {
             return res.status(400).json({ error: 'No school associated with this user' });
         }
 
-        const totalCalls = await CallLog.countDocuments({ schoolId });
-        const inquiryCalls = await CallLog.countDocuments({ schoolId, callType: 'inquiry' });
-        const totalFollowups = await Followup.countDocuments({ schoolId });
-        const sentFollowups = await Followup.countDocuments({ schoolId, status: 'sent' });
-        const formsSent = await FormQuestion.countDocuments({ schoolId });
-        const inquirySubmissions = await InquirySubmission.countDocuments({ schoolId });
+        const calls = await CallLog.find({ schoolId }).sort({ createdAt: -1 }).lean();
         const toursBooked = await TourBooking.countDocuments({ schoolId });
 
-        const recentCalls = await CallLog.find({ schoolId })
-            .sort({ createdAt: -1 })
-            .limit(10)
-            .lean();
+        const totalCalls = calls.length;
+        const inquiryCalls = calls.filter(c => c.callType === 'inquiry').length;
+        const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
+        const callMinutes = Math.floor(totalDurationSeconds / 60);
+
+        // Generate chart data for the last 14 days
+        const chartData = [];
+        const today = new Date();
+
+        for (let i = 13; i >= 0; i--) {
+            const date = new Date(today);
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+            const dayStart = new Date(date);
+            dayStart.setHours(0, 0, 0, 0);
+            const dayEnd = new Date(date);
+            dayEnd.setHours(23, 59, 59, 999);
+
+            const dayCalls = calls.filter(c => {
+                const cDate = new Date(c.createdAt || c.timestamp); // Check both depending on schema implementation
+                return cDate >= dayStart && cDate <= dayEnd;
+            });
+
+            chartData.push({
+                name: dateStr,
+                calls: dayCalls.length
+            });
+        }
+
+        const recentCalls = calls.slice(0, 10);
 
         res.json({
             metrics: [
                 { label: 'Total Calls', value: totalCalls },
-                { label: 'Inquiry Calls', value: inquiryCalls },
                 { label: 'Tours Booked', value: toursBooked },
-                { label: 'Forms Sent', value: formsSent },
-                { label: 'Inquiry Forms Submitted', value: inquirySubmissions },
+                { label: 'Call Minutes', value: callMinutes },
             ],
+            chartData,
             recentCalls: recentCalls.map(c => ({
                 id: c._id,
                 callerName: c.callerName,
                 callerPhone: c.callerPhone,
                 callType: c.callType,
                 duration: c.duration,
-                timestamp: c.createdAt,
+                timestamp: c.createdAt || c.timestamp,
                 recordingUrl: c.recordingUrl || null,
             })),
         });
@@ -153,6 +174,10 @@ router.get('/settings', async (req, res) => {
 
         console.log('[GET /settings] qaPairs count:', qaPairs.length);
 
+        const integrations = await require('../models/Integration').find({ schoolId, connected: true }).lean();
+        const googleConnected = integrations.some(i => i.type === 'google');
+        const outlookConnected = integrations.some(i => i.type === 'outlook');
+
         res.json({
             id: school._id.toString(),
             name: school.name,
@@ -171,6 +196,9 @@ router.get('/settings', async (req, res) => {
             smsTemplate: school.smsTemplate || 'Thank you for your interest in our school! Please complete our inquiry form here: {form_link}',
             emailTemplate: school.emailTemplate || 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment at {school_name}.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}',
             qaPairs,
+            preferredCalendar: school.preferredCalendar || 'google',
+            googleConnected,
+            outlookConnected,
         });
     } catch (err) {
         console.error('[GET /settings] Error:', err);
@@ -202,7 +230,7 @@ router.put('/settings', async (req, res) => {
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
-            qaPairs
+            qaPairs, preferredCalendar
         } = req.body;
 
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
@@ -219,6 +247,7 @@ router.put('/settings', async (req, res) => {
         if (emailAutoFollowup !== undefined) school.emailAutoFollowup = emailAutoFollowup;
         if (smsTemplate !== undefined) school.smsTemplate = smsTemplate;
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
+        if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
 
         if (Array.isArray(qaPairs)) {
             // splice-replace: most reliable way to update a Mongoose subdoc array
