@@ -19,6 +19,11 @@ const schoolSchema = new mongoose.Schema({
     emailAutoFollowup: { type: Boolean, default: false },
     smsTemplate: { type: String, default: 'Thank you for your interest in our school! Please complete our inquiry form here: {form_link}' },
     emailTemplate: { type: String, default: 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}' },
+    // AI Knowledge Base
+    qaPairs: [{
+        question: { type: String, default: '' },
+        answer: { type: String, default: '' }
+    }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);

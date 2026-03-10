@@ -134,11 +134,24 @@ router.post('/integrations/:type/disconnect', async (req, res) => {
 router.get('/settings', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
+        console.log('[GET /settings] schoolId:', schoolId);
+
+        if (!schoolId) {
+            return res.status(400).json({ error: 'No school associated with this account' });
+        }
+
         const school = await School.findById(schoolId).lean();
 
         if (!school) {
             return res.status(404).json({ error: 'School not found' });
         }
+
+        const qaPairs = (school.qaPairs || []).map(p => ({
+            question: p.question || '',
+            answer: p.answer || ''
+        }));
+
+        console.log('[GET /settings] qaPairs count:', qaPairs.length);
 
         res.json({
             id: school._id.toString(),
@@ -157,9 +170,10 @@ router.get('/settings', async (req, res) => {
             emailAutoFollowup: school.emailAutoFollowup || false,
             smsTemplate: school.smsTemplate || 'Thank you for your interest in our school! Please complete our inquiry form here: {form_link}',
             emailTemplate: school.emailTemplate || 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment at {school_name}.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}',
+            qaPairs,
         });
     } catch (err) {
-        console.error('School settings error:', err);
+        console.error('[GET /settings] Error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -168,36 +182,63 @@ router.get('/settings', async (req, res) => {
 router.put('/settings', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
+        console.log('[PUT /settings] schoolId:', schoolId);
+        console.log('[PUT /settings] body keys:', Object.keys(req.body));
+        console.log('[PUT /settings] qaPairs received:', Array.isArray(req.body.qaPairs) ? req.body.qaPairs.length + ' pairs' : 'not an array / missing');
+
+        if (!schoolId) {
+            return res.status(400).json({ error: 'No school associated with this account' });
+        }
+
+        // Use findById + save() — most reliable for Mongoose subdocument arrays
+        const school = await School.findById(schoolId);
+
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+
         const {
             aiNumber, routingNumber, escalationNumber, language, script,
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
-            smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate
+            smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
+            qaPairs
         } = req.body;
 
-        const update = {};
-        if (aiNumber !== undefined) update.aiNumber = aiNumber;
-        if (routingNumber !== undefined) update.routingNumber = routingNumber;
-        if (escalationNumber !== undefined) update.escalationNumber = escalationNumber;
-        if (language !== undefined) update.language = language;
-        if (script !== undefined) update.script = script;
-        if (businessHoursStart !== undefined) update.businessHoursStart = businessHoursStart;
-        if (businessHoursEnd !== undefined) update.businessHoursEnd = businessHoursEnd;
-        if (twilioSid !== undefined) update.twilioSid = twilioSid;
-        if (twilioAuthToken !== undefined) update.twilioAuthToken = twilioAuthToken;
-        if (twilioPhoneNumber !== undefined) update.twilioPhoneNumber = twilioPhoneNumber;
-        if (smsAutoFollowup !== undefined) update.smsAutoFollowup = smsAutoFollowup;
-        if (emailAutoFollowup !== undefined) update.emailAutoFollowup = emailAutoFollowup;
-        if (smsTemplate !== undefined) update.smsTemplate = smsTemplate;
-        if (emailTemplate !== undefined) update.emailTemplate = emailTemplate;
+        if (aiNumber !== undefined) school.aiNumber = aiNumber;
+        if (routingNumber !== undefined) school.routingNumber = routingNumber;
+        if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
+        if (language !== undefined) school.language = language;
+        if (script !== undefined) school.script = script;
+        if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
+        if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
+        if (twilioSid !== undefined) school.twilioSid = twilioSid;
+        if (twilioAuthToken !== undefined) school.twilioAuthToken = twilioAuthToken;
+        if (twilioPhoneNumber !== undefined) school.twilioPhoneNumber = twilioPhoneNumber;
+        if (smsAutoFollowup !== undefined) school.smsAutoFollowup = smsAutoFollowup;
+        if (emailAutoFollowup !== undefined) school.emailAutoFollowup = emailAutoFollowup;
+        if (smsTemplate !== undefined) school.smsTemplate = smsTemplate;
+        if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
 
+        if (Array.isArray(qaPairs)) {
+            // splice-replace: most reliable way to update a Mongoose subdoc array
+            school.qaPairs.splice(0, school.qaPairs.length, ...qaPairs.map(p => ({
+                question: p.question || '',
+                answer: p.answer || ''
+            })));
+            console.log('[PUT /settings] qaPairs set on document:', school.qaPairs.length);
+        }
 
-        await School.findByIdAndUpdate(schoolId, update);
+        await school.save();
+        console.log('[PUT /settings] Saved successfully. qaPairs in DB:', school.qaPairs.length);
 
-        res.json({ message: 'Settings updated successfully' });
+        res.json({
+            message: 'Settings updated successfully',
+            qaPairsCount: school.qaPairs.length
+        });
     } catch (err) {
-        console.error('Update settings error:', err);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('[PUT /settings] Error:', err);
+        res.status(500).json({ error: err.message || 'Internal server error' });
     }
 });
 
