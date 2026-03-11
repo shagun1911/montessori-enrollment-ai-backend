@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const School = require('../models/School');
 const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
@@ -8,6 +9,7 @@ const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
+const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
 
@@ -78,6 +80,93 @@ router.get('/dashboard', async (req, res) => {
         });
     } catch (err) {
         console.error('School dashboard error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/school/call-logs - Fetch detailed call logs from voiceAI collection in benny DB
+router.get('/call-logs', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const school = await School.findById(schoolId).select('aiNumber').lean();
+
+        if (!school || !school.aiNumber) {
+            return res.json([]);
+        }
+
+        // Normalize school AI number (digits and leading + only)
+        const digits = school.aiNumber.replace(/\D/g, '');
+        const normalizedNumber = digits ? `+${digits}` : '';
+        const participantId = `sip_${normalizedNumber}`;
+
+        const bennyDb = mongoose.connection.useDb('benny');
+        const collection = bennyDb.collection('voiceAI');
+
+        // 1. Find sessions associated with this participant
+        const schoolLogs = await collection.find({ participant_id: participantId })
+            .project({ session_id: 1 })
+            .toArray();
+
+        const sessionIds = [...new Set(schoolLogs.map(l => l.session_id))];
+
+        if (sessionIds.length === 0) {
+            return res.json([]);
+        }
+
+        // 2. Fetch ALL logs for these sessions to get the complete transcript (all participants)
+        const allLogs = await collection.find({ session_id: { $in: sessionIds } })
+            .sort({ created_at: -1 })
+            .toArray();
+
+        // 3. Group by session to merge transcripts
+        const sessionsMap = {};
+        allLogs.forEach(log => {
+            const sid = log.session_id;
+            if (!sessionsMap[sid]) {
+                sessionsMap[sid] = {
+                    id: log._id.toString(),
+                    sessionId: sid,
+                    participantId: log.participant_id, // Primary participant
+                    transcript: [],
+                    summary: log.transcript_summary || '',
+                    recordingUrl: log.recording_url,
+                    duration: log.duration_seconds || 0,
+                    createdAt: log.created_at || log.timestamp
+                };
+            }
+
+            // Add transcript items
+            if (Array.isArray(log.transcript)) {
+                log.transcript.forEach(t => {
+                    sessionsMap[sid].transcript.push({
+                        role: t.role || 'unknown',
+                        text: t.content || t.text || t.message || (typeof t === 'string' ? t : ''),
+                        timestamp: t.timestamp || log.created_at
+                    });
+                });
+            }
+
+            // Prefer summary if found in any leg
+            if (log.transcript_summary && !sessionsMap[sid].summary) {
+                sessionsMap[sid].summary = log.transcript_summary;
+            }
+            // Prefer recording URL if found
+            if (log.recording_url && !sessionsMap[sid].recordingUrl) {
+                sessionsMap[sid].recordingUrl = log.recording_url;
+            }
+        });
+
+        const formattedLogs = Object.values(sessionsMap).map(session => {
+            // Sort transcript items by timestamp
+            session.transcript.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            // Filter out empty messages
+            session.transcript = session.transcript.filter(t => t.text);
+            return session;
+        }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        res.json(formattedLogs);
+    } catch (err) {
+        console.error('Call logs error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
