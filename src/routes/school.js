@@ -26,11 +26,36 @@ router.get('/dashboard', async (req, res) => {
             return res.status(400).json({ error: 'No school associated with this user' });
         }
 
-        const calls = await CallLog.find({ schoolId }).sort({ createdAt: -1 }).lean();
+        const school = await School.findById(schoolId).select('aiNumber').lean();
         const toursBooked = await TourBooking.countDocuments({ schoolId });
 
+        let calls = [];
+        if (school && school.aiNumber) {
+            const digits = school.aiNumber.replace(/\D/g, '');
+            const normalizedNumber = digits ? `+${digits}` : '';
+            const participantId = `sip_${normalizedNumber}`;
+
+            const bennyDb = mongoose.connection.useDb('benny');
+            const collection = bennyDb.collection('voiceAI');
+
+            // Get all logs for this school's AI number
+            const rawLogs = await collection.find({ participant_id: participantId })
+                .sort({ created_at: -1 })
+                .toArray();
+
+            // Map to a consistent format
+            calls = rawLogs.map(log => ({
+                id: log._id.toString(),
+                callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
+                callerName: 'Parent', // Generic since it's not in voiceAI DB
+                duration: log.duration_seconds || 0,
+                timestamp: log.created_at || log.timestamp || new Date(),
+                recordingUrl: log.recording_url || null,
+                callType: 'inquiry'
+            }));
+        }
+
         const totalCalls = calls.length;
-        const inquiryCalls = calls.filter(c => c.callType === 'inquiry').length;
         const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
         const callMinutes = Math.floor(totalDurationSeconds / 60);
 
@@ -49,7 +74,7 @@ router.get('/dashboard', async (req, res) => {
             dayEnd.setHours(23, 59, 59, 999);
 
             const dayCalls = calls.filter(c => {
-                const cDate = new Date(c.createdAt || c.timestamp); // Check both depending on schema implementation
+                const cDate = new Date(c.timestamp);
                 return cDate >= dayStart && cDate <= dayEnd;
             });
 
@@ -59,7 +84,15 @@ router.get('/dashboard', async (req, res) => {
             });
         }
 
-        const recentCalls = calls.slice(0, 10);
+        const recentCalls = calls.slice(0, 10).map(c => ({
+            id: c.id,
+            callerName: c.callerName,
+            callerPhone: c.callerPhone,
+            callType: c.callType,
+            duration: Math.round(c.duration),
+            timestamp: c.timestamp,
+            recordingUrl: c.recordingUrl,
+        }));
 
         res.json({
             metrics: [
@@ -68,15 +101,7 @@ router.get('/dashboard', async (req, res) => {
                 { label: 'Call Minutes', value: callMinutes },
             ],
             chartData,
-            recentCalls: recentCalls.map(c => ({
-                id: c._id,
-                callerName: c.callerName,
-                callerPhone: c.callerPhone,
-                callType: c.callType,
-                duration: c.duration,
-                timestamp: c.createdAt || c.timestamp,
-                recordingUrl: c.recordingUrl || null,
-            })),
+            recentCalls,
         });
     } catch (err) {
         console.error('School dashboard error:', err);
