@@ -115,6 +115,13 @@ async function processWebhookAsync(payload) {
         await savedWebhook.save();
         console.log('[Webhook] Webhook marked as processed');
 
+        // Send email notification to admin (if configured)
+        if (type === 'post_call_transcription') {
+            sendAdminEmailNotification(savedWebhook).catch(err => {
+                console.error('[Webhook] Error sending admin email notification:', err);
+            });
+        }
+
         // Process transcript with OpenAI if it's a transcription webhook
         if (type === 'post_call_transcription' && Array.isArray(data.transcript) && data.transcript.length > 0) {
             console.log('[Webhook] Starting AI processing for transcript...');
@@ -425,6 +432,95 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
     } catch (err) {
         console.error('[Webhook Booking] Error creating tour booking:', err);
         throw err;
+    }
+}
+
+/**
+ * Send email notification to admin when webhook is received
+ */
+async function sendAdminEmailNotification(webhook) {
+    try {
+        // Find school by phone number or agent ID
+        const schoolId = await findSchoolForWebhook(webhook);
+        if (!schoolId) {
+            console.warn('[Webhook Email] Cannot send email: school not found');
+            return;
+        }
+
+        const school = await School.findById(schoolId).select('name adminEmail').lean();
+        if (!school || !school.adminEmail || !school.adminEmail.trim()) {
+            console.log('[Webhook Email] Admin email not configured, skipping notification');
+            return;
+        }
+
+        const adminEmail = school.adminEmail.trim();
+        
+        // Get email transport
+        const host = process.env.SMTP_HOST;
+        const port = process.env.SMTP_PORT || 587;
+        const user = process.env.SMTP_USER;
+        const pass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
+        const secure = process.env.SMTP_SECURE === 'true';
+
+        if (!host || !user || !pass) {
+            console.warn('[Webhook Email] SMTP not configured, cannot send admin notification');
+            return;
+        }
+
+        const nodemailer = require('nodemailer');
+        const transport = nodemailer.createTransport({
+            host,
+            port: Number(port),
+            secure,
+            auth: { user, pass },
+        });
+
+        const from = process.env.MAIL_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@enrollmentai.com';
+        
+        // Format call information
+        const callDuration = webhook.metadata?.phone_call?.call_duration_secs || 0;
+        const callDurationMin = Math.floor(callDuration / 60);
+        const callDurationSec = callDuration % 60;
+        const callerNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || 'Unknown';
+        const conversationId = webhook.conversation_id || 'N/A';
+        const receivedAt = webhook.received_at ? new Date(webhook.received_at).toLocaleString() : new Date().toLocaleString();
+
+        // Count transcript entries
+        const transcriptCount = Array.isArray(webhook.transcript) ? webhook.transcript.length : 0;
+
+        const emailSubject = `New Call Received - ${school.name}`;
+        const emailBody = `Hello,
+
+A new call has been received and processed for ${school.name}.
+
+Call Details:
+- Conversation ID: ${conversationId}
+- Caller Number: ${callerNumber}
+- Call Duration: ${callDurationMin}m ${callDurationSec}s
+- Transcript Entries: ${transcriptCount}
+- Received At: ${receivedAt}
+
+The call transcript has been processed and is available in your dashboard.
+
+${transcriptCount > 0 ? 'A summary and tour booking information (if applicable) will be available shortly after AI processing completes.' : ''}
+
+You can view the full call details in your dashboard.
+
+Best regards,
+Montessori Enrollment AI Platform`;
+
+        await transport.sendMail({
+            from,
+            to: adminEmail,
+            subject: emailSubject,
+            text: emailBody,
+        });
+
+        console.log(`[Webhook Email] Admin notification sent successfully to ${adminEmail}`);
+
+    } catch (err) {
+        console.error('[Webhook Email] Error sending admin email notification:', err.message);
+        // Don't throw - email failure shouldn't break webhook processing
     }
 }
 

@@ -577,6 +577,8 @@ router.get('/settings', async (req, res) => {
             emailTemplate: school.emailTemplate || 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment at {school_name}.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}',
             qaPairs,
             knowledgeBaseDocumentId: school.knowledgeBaseDocumentId || '',
+            systemPrompt: school.systemPrompt || '',
+            adminEmail: school.adminEmail || '',
             preferredCalendar: school.preferredCalendar || 'google',
             googleConnected,
             outlookConnected,
@@ -611,7 +613,7 @@ router.put('/settings', async (req, res) => {
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
-            qaPairs, preferredCalendar
+            qaPairs, preferredCalendar, adminEmail
         } = req.body;
 
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
@@ -630,6 +632,7 @@ router.put('/settings', async (req, res) => {
         if (smsTemplate !== undefined) school.smsTemplate = smsTemplate;
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
+        if (adminEmail !== undefined) school.adminEmail = adminEmail;
 
         // Check if qaPairs changed
         let qaPairsChanged = false;
