@@ -63,6 +63,78 @@ async function deleteKnowledgeBaseDocument(documentId) {
     }
 }
 
+// Helper function to update agent with knowledge base ID
+async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, knowledgeBaseId) {
+    const baseUrl = process.env.ELEVENLABS_API_URL;
+    if (!baseUrl) {
+        console.warn('[Agent PATCH] ELEVENLABS_API_URL not configured, skipping agent update');
+        return null;
+    }
+
+    if (!agentId) {
+        console.warn('[Agent PATCH] AGENT_ID not configured, skipping agent update');
+        return null;
+    }
+
+    if (!knowledgeBaseId) {
+        console.warn('[Agent PATCH] No knowledge base ID provided, skipping agent update');
+        return null;
+    }
+
+    try {
+        const url = `${baseUrl}/api/v1/agents/${agentId}`;
+        
+        const payload = {
+            conversation_config: {
+                agent: {
+                    first_message: firstMessage || '',
+                    language: 'en',
+                    prompt: {
+                        prompt: systemPrompt || ''
+                    }
+                }
+            },
+            knowledge_base_ids: [knowledgeBaseId]
+        };
+        
+        console.log(`[Agent PATCH] Request URL: ${url}`);
+        console.log(`[Agent PATCH] Agent ID: ${agentId}`);
+        console.log(`[Agent PATCH] Request Payload:`, JSON.stringify({
+            ...payload,
+            conversation_config: {
+                ...payload.conversation_config,
+                agent: {
+                    ...payload.conversation_config.agent,
+                    first_message: (firstMessage || '').substring(0, 100) + ((firstMessage || '').length > 100 ? '...' : ''),
+                    prompt: {
+                        prompt: (systemPrompt || '').substring(0, 100) + ((systemPrompt || '').length > 100 ? '...' : '')
+                    }
+                }
+            }
+        }, null, 2));
+        console.log(`[Agent PATCH] Full first_message length: ${(firstMessage || '').length} characters`);
+        console.log(`[Agent PATCH] Full system_prompt length: ${(systemPrompt || '').length} characters`);
+        console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId}`);
+        
+        const response = await axios.patch(url, payload, {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        console.log(`[Agent PATCH] Response Status: ${response.status}`);
+        console.log(`[Agent PATCH] Response Data:`, JSON.stringify(response.data, null, 2));
+        console.log(`[Agent PATCH] Successfully updated agent with knowledge base`);
+        return response.data;
+    } catch (err) {
+        console.error(`[Agent PATCH] Failed to update agent`);
+        console.error(`[Agent PATCH] Error Status:`, err.response?.status);
+        console.error(`[Agent PATCH] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
+        console.error(`[Agent PATCH] Error Message:`, err.message);
+        throw err;
+    }
+}
+
 // Helper function to ingest a knowledge base document to ElevenLabs
 async function ingestKnowledgeBaseDocument(text, schoolName) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
@@ -493,6 +565,7 @@ router.get('/settings', async (req, res) => {
             escalationNumber: school.escalationNumber || '',
             language: school.language || 'en',
             script: school.script || '',
+            systemPrompt: school.systemPrompt || '',
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
             twilioSid: school.twilioSid || '',
@@ -546,6 +619,7 @@ router.put('/settings', async (req, res) => {
         if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
         if (language !== undefined) school.language = language;
         if (script !== undefined) school.script = script;
+        if (systemPrompt !== undefined) school.systemPrompt = systemPrompt;
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
         if (twilioSid !== undefined) school.twilioSid = twilioSid;
@@ -605,6 +679,23 @@ router.put('/settings', async (req, res) => {
                         if (newDocumentId) {
                             school.knowledgeBaseDocumentId = newDocumentId;
                             console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
+                            
+                            // Step 4: Update agent with knowledge base ID
+                            const agentId = process.env.AGENT_ID;
+                            const firstMessage = school.script || '';
+                            const systemPrompt = school.systemPrompt || '';
+                            
+                            if (agentId) {
+                                try {
+                                    await updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, newDocumentId);
+                                    console.log('[PUT /settings] Agent updated with knowledge base ID');
+                                } catch (err) {
+                                    console.error('[PUT /settings] Failed to update agent, but KB document was created:', err);
+                                    // Continue even if agent update fails
+                                }
+                            } else {
+                                console.warn('[PUT /settings] AGENT_ID not configured, skipping agent update');
+                            }
                         }
                     }
                 } else {

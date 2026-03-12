@@ -8,6 +8,7 @@ const schoolSchema = new mongoose.Schema({
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     language: { type: String, enum: ['EN', 'ES'], default: 'EN' },
     script: { type: String, default: 'Welcome to our school. How can I help you today?' },
+    systemPrompt: { type: String, default: '' }, // System prompt for agent configuration
     businessHoursStart: { type: String, default: '09:00' },
     businessHoursEnd: { type: String, default: '17:00' },
     // Twilio
