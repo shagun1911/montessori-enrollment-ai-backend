@@ -194,8 +194,33 @@ router.get('/dashboard', async (req, res) => {
             return res.status(400).json({ error: 'No school associated with this user' });
         }
 
-        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const school = await School.findById(schoolId).select('aiNumber adminEmail').lean();
         const toursBooked = await TourBooking.countDocuments({ schoolId });
+
+        // Get admin email notifications (emails sent to admin after inbound calls)
+        let adminEmailNotifications = [];
+        if (school && school.adminEmail) {
+            const Followup = require('../models/Followup');
+            const adminEmails = await Followup.find({
+                schoolId,
+                type: 'Email',
+                recipient: school.adminEmail.trim(),
+                leadName: 'Admin Notification'
+            })
+                .sort({ createdAt: -1 })
+                .limit(20)
+                .lean();
+            
+            adminEmailNotifications = adminEmails.map(email => ({
+                id: email._id.toString(),
+                recipient: email.recipient,
+                status: email.status,
+                subject: email.message?.split('\n')[0] || 'New Call Received',
+                sentAt: email.createdAt || email.updatedAt,
+                conversationId: email.message?.match(/Conversation ID: ([^\n]+)/)?.[1] || null,
+                callerNumber: email.message?.match(/Caller Number: ([^\n]+)/)?.[1] || null,
+            }));
+        }
 
         // Get webhook data (transcription webhooks with summaries)
         const webhooks = await ElevenLabsWebhook.find({
@@ -367,6 +392,7 @@ router.get('/dashboard', async (req, res) => {
             ],
             chartData,
             recentCalls,
+            adminEmailNotifications,
         });
     } catch (err) {
         console.error('School dashboard error:', err);

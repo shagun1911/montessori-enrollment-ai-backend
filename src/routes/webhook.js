@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const School = require('../models/School');
 const TourBooking = require('../models/TourBooking');
+const Followup = require('../models/Followup');
 const { processTranscript } = require('../services/openaiService');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
 
@@ -514,6 +515,16 @@ Montessori Enrollment AI Platform`;
             to: adminEmail,
             subject: emailSubject,
             text: emailBody,
+        });
+
+        // Create Followup record to track admin email notification
+        await Followup.create({
+            schoolId,
+            leadName: 'Admin Notification',
+            type: 'Email',
+            status: 'sent',
+            message: emailBody,
+            recipient: adminEmail,
         });
 
         console.log(`[Webhook Email] Admin notification sent successfully to ${adminEmail}`);
