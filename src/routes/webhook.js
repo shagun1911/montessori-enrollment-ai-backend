@@ -298,54 +298,82 @@ JSON Response:`;
 }
 
 /**
- * Find school by phone number from webhook data
- * No fallback - only matches by phone number to ensure correct school
+ * Find school by phone number or agent ID from webhook data
+ * Falls back to agent ID matching if phone number matching fails
  */
 async function findSchoolForWebhook(webhook) {
     try {
         // Try to find school by phone number from user_id or metadata
         const phoneNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || '';
         
-        if (!phoneNumber) {
-            console.warn('[Webhook] No phone number found in webhook data (user_id or metadata.phone_call.external_number)');
-            console.warn('[Webhook] Webhook data:', {
-                user_id: webhook.user_id,
-                external_number: webhook.metadata?.phone_call?.external_number
-            });
-            return null;
-        }
-
-        const normalizedPhone = normalizePhone(phoneNumber);
-        if (!normalizedPhone) {
-            console.warn(`[Webhook] Could not normalize phone number: ${phoneNumber}`);
-            return null;
-        }
-
-        console.log(`[Webhook] Searching for school with phone number: ${normalizedPhone}`);
-        
-        // Get all schools and match by aiNumber or twilioPhoneNumber
-        const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
-        
-        const matchedSchool = allSchools.find(s => {
-            const schoolAiNumber = normalizePhone(s.aiNumber || '');
-            const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
-            const matches = schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
-            
-            if (matches) {
-                console.log(`[Webhook] Phone match found: ${normalizedPhone} matches school "${s.name}" (ID: ${s._id})`);
-                console.log(`[Webhook] School AI Number: ${s.aiNumber || 'N/A'}, Twilio Number: ${s.twilioPhoneNumber || 'N/A'}`);
+        if (phoneNumber) {
+            const normalizedPhone = normalizePhone(phoneNumber);
+            if (normalizedPhone) {
+                console.log(`[Webhook] Searching for school with phone number: ${normalizedPhone}`);
+                
+                // Get all schools and match by aiNumber or twilioPhoneNumber
+                const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
+                
+                const matchedSchool = allSchools.find(s => {
+                    const schoolAiNumber = normalizePhone(s.aiNumber || '');
+                    const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
+                    const matches = schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
+                    
+                    if (matches) {
+                        console.log(`[Webhook] Phone match found: ${normalizedPhone} matches school "${s.name}" (ID: ${s._id})`);
+                        console.log(`[Webhook] School AI Number: ${s.aiNumber || 'N/A'}, Twilio Number: ${s.twilioPhoneNumber || 'N/A'}`);
+                    }
+                    
+                    return matches;
+                });
+                
+                if (matchedSchool) {
+                    console.log(`[Webhook] Found school by phone number: ${matchedSchool.name} (${matchedSchool._id})`);
+                    return matchedSchool._id;
+                }
             }
-            
-            return matches;
-        });
+        }
+
+        // Fallback: Try to match by agent ID
+        const agentId = webhook.agent_id || '';
+        const envAgentId = process.env.AGENT_ID || '';
         
-        if (matchedSchool) {
-            console.log(`[Webhook] Found school by phone number: ${matchedSchool.name} (${matchedSchool._id})`);
-            return matchedSchool._id;
+        if (agentId && envAgentId && agentId === envAgentId) {
+            console.log(`[Webhook] Agent ID match found: ${agentId} matches AGENT_ID from environment`);
+            
+            // TODO: For now, hardcode to specific school ID
+            // In the future, add agentId field to School model for proper matching
+            const hardcodedSchoolId = '69a2a7bf84844ca0d53116d6';
+            
+            // Verify the school exists
+            const school = await School.findById(hardcodedSchoolId).select('_id name status').lean();
+            if (school && school.status === 'active') {
+                console.log(`[Webhook] Using hardcoded school: ${school.name} (${school._id})`);
+                return school._id;
+            } else {
+                console.warn(`[Webhook] Hardcoded school ID ${hardcodedSchoolId} not found or not active`);
+            }
+        } else if (agentId) {
+            console.log(`[Webhook] Agent ID from webhook (${agentId}) does not match AGENT_ID from environment (${envAgentId || 'not set'})`);
+        }
+
+        // Final fallback: Use hardcoded school ID if agent ID matches or if no other match found
+        const hardcodedSchoolId = '69a2a7bf84844ca0d53116d6';
+        const school = await School.findById(hardcodedSchoolId).select('_id name status').lean();
+        if (school && school.status === 'active') {
+            console.log(`[Webhook] Using hardcoded school as fallback: ${school.name} (${school._id})`);
+            return school._id;
         }
 
         // No school found - log all available schools for debugging
-        console.warn(`[Webhook] Could not find school matching phone number: ${normalizedPhone}`);
+        const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
+        console.warn(`[Webhook] Could not find school matching phone number or agent ID`);
+        console.warn(`[Webhook] Webhook data:`, {
+            user_id: webhook.user_id,
+            agent_id: webhook.agent_id,
+            agent_name: webhook.agent_name,
+            external_number: webhook.metadata?.phone_call?.external_number
+        });
         console.warn(`[Webhook] Available schools with phone numbers:`);
         allSchools.forEach(s => {
             console.warn(`  - ${s.name} (ID: ${s._id}): AI=${s.aiNumber || 'N/A'}, Twilio=${s.twilioPhoneNumber || 'N/A'}`);
@@ -498,7 +526,7 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
 
         console.log(`[Webhook Email] Looking up school with ID: ${schoolObjectId} (type: ${typeof schoolObjectId})`);
         
-        const school = await School.findById(schoolObjectId).select('name').lean();
+        const school = await School.findById(schoolObjectId).select('name adminEmail').lean();
         
         console.log(`[Webhook Email] School found: ${school ? school.name : 'Not found'}`);
         
@@ -515,9 +543,20 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         
         console.log(`[Webhook Email] School user found: ${schoolUser ? schoolUser.name : 'Not found'}`);
         console.log(`[Webhook Email] School user email: "${schoolUser?.email || 'Not set'}"`);
+        console.log(`[Webhook Email] School adminEmail: "${school?.adminEmail || 'Not set'}"`);
         
-        if (!schoolUser || !schoolUser.email || !schoolUser.email.trim()) {
-            console.log('[Webhook Email] No school user email found for this school, skipping notification');
+        // Determine admin email: prefer user email, fallback to school adminEmail
+        let adminEmail = null;
+        if (schoolUser && schoolUser.email && schoolUser.email.trim()) {
+            adminEmail = schoolUser.email.trim();
+            console.log(`[Webhook Email] Using school user email: ${adminEmail}`);
+        } else if (school.adminEmail && school.adminEmail.trim()) {
+            adminEmail = school.adminEmail.trim();
+            console.log(`[Webhook Email] Using school adminEmail field: ${adminEmail}`);
+        }
+        
+        if (!adminEmail) {
+            console.log('[Webhook Email] No admin email found (neither school user email nor school adminEmail), skipping notification');
             // Debug: show all school users
             const allSchoolUsers = await User.find({ role: 'school' }).select('email name schoolId').lean();
             console.log(`[Webhook Email] Total school users: ${allSchoolUsers.length}`);
@@ -528,8 +567,6 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             }
             return;
         }
-
-        const adminEmail = schoolUser.email.trim();
         
         // Get email transport
         const host = process.env.SMTP_HOST;
