@@ -217,12 +217,16 @@ async function createCalendarEvent(schoolId, opts) {
     const school = await School.findById(schoolId).select('preferredCalendar').lean();
     const preference = school?.preferredCalendar || 'google';
 
+    console.log(`[Calendar] Creating event for school: ${schoolId}`);
+    console.log(`[Calendar] School preference: ${preference}`);
+
     if (preference === 'none') {
+        console.log('[Calendar] Calendar sync disabled for this school');
         return { success: true, message: 'Calendar sync disabled' };
     }
 
     const integrationCriteria = {
-        schoolId,
+        schoolId: new require('mongoose').Types.ObjectId(schoolId),
         connected: true,
         type: { $in: ['google', 'outlook'] }
     };
@@ -230,10 +234,31 @@ async function createCalendarEvent(schoolId, opts) {
     if (preference === 'google') integrationCriteria.type = 'google';
     else if (preference === 'outlook') integrationCriteria.type = 'outlook';
 
+    console.log(`[Calendar] Searching for integrations with criteria:`, JSON.stringify({
+        schoolId: schoolId.toString(),
+        connected: true,
+        type: integrationCriteria.type
+    }));
+
     const integrations = await Integration.find(integrationCriteria).lean();
+    console.log(`[Calendar] Found ${integrations.length} integration(s) matching criteria`);
+
+    if (integrations.length > 0) {
+        integrations.forEach((int, idx) => {
+            console.log(`[Calendar] Integration ${idx + 1}: type=${int.type}, connected=${int.connected}, hasTokens=${!!int.config?.tokens?.access_token || !!int.config?.accessToken}`);
+        });
+    }
 
     if (!integrations || integrations.length === 0) {
-        console.warn('[Calendar] No connected integration found for preference:', preference);
+        // Check if there are any integrations at all for this school
+        const allIntegrations = await Integration.find({ schoolId: new require('mongoose').Types.ObjectId(schoolId) }).lean();
+        console.warn(`[Calendar] No connected integration found for preference: ${preference}`);
+        console.warn(`[Calendar] Total integrations for school: ${allIntegrations.length}`);
+        if (allIntegrations.length > 0) {
+            allIntegrations.forEach((int, idx) => {
+                console.warn(`[Calendar] Integration ${idx + 1}: type=${int.type}, connected=${int.connected}`);
+            });
+        }
         return { success: false, error: 'Calendar provider not connected or mismatched preference.' };
     }
 

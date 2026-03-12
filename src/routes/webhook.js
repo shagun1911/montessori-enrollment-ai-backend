@@ -116,13 +116,6 @@ async function processWebhookAsync(payload) {
         await savedWebhook.save();
         console.log('[Webhook] Webhook marked as processed');
 
-        // Send email notification to admin (if configured)
-        if (type === 'post_call_transcription') {
-            sendAdminEmailNotification(savedWebhook).catch(err => {
-                console.error('[Webhook] Error sending admin email notification:', err);
-            });
-        }
-
         // Process transcript with OpenAI if it's a transcription webhook
         if (type === 'post_call_transcription' && Array.isArray(data.transcript) && data.transcript.length > 0) {
             console.log('[Webhook] Starting AI processing for transcript...');
@@ -190,6 +183,11 @@ async function processTranscriptWithAI(webhookId, transcriptArray) {
                 console.error('[Webhook AI] Error creating tour booking:', err);
             });
         }
+
+        // Send email notification to admin AFTER AI processing completes (so it includes summary)
+        sendAdminEmailNotification(updatedWebhook, aiResult).catch(err => {
+            console.error('[Webhook AI] Error sending admin email notification:', err);
+        });
 
         return updatedWebhook;
 
@@ -437,9 +435,11 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
 }
 
 /**
- * Send email notification to admin when webhook is received
+ * Send email notification to admin when webhook is received and processed
+ * @param {Object} webhook - The webhook document (with AI processing results)
+ * @param {Object} aiResult - The AI processing result (summary, tour booking info)
  */
-async function sendAdminEmailNotification(webhook) {
+async function sendAdminEmailNotification(webhook, aiResult = null) {
     try {
         // Find school by phone number or agent ID
         const schoolId = await findSchoolForWebhook(webhook);
@@ -489,8 +489,14 @@ async function sendAdminEmailNotification(webhook) {
         // Count transcript entries
         const transcriptCount = Array.isArray(webhook.transcript) ? webhook.transcript.length : 0;
 
-        const emailSubject = `New Call Received - ${school.name}`;
-        const emailBody = `Hello,
+        // Include AI processing results if available
+        const summary = webhook.summary || aiResult?.summary || '';
+        const tourBooked = webhook.tour_booking_detected || aiResult?.tour_booking_detected || false;
+        const tourDate = webhook.tour_booking_date || aiResult?.tour_booking_date || null;
+        const tourNotes = webhook.tour_booking_extracted?.notes || aiResult?.tour_booking_extracted?.notes || '';
+
+        const emailSubject = `New Call Received - ${school.name}${tourBooked ? ' (Tour Booked)' : ''}`;
+        let emailBody = `Hello,
 
 A new call has been received and processed for ${school.name}.
 
@@ -501,11 +507,27 @@ Call Details:
 - Transcript Entries: ${transcriptCount}
 - Received At: ${receivedAt}
 
-The call transcript has been processed and is available in your dashboard.
+`;
 
-${transcriptCount > 0 ? 'A summary and tour booking information (if applicable) will be available shortly after AI processing completes.' : ''}
+        if (summary) {
+            emailBody += `Call Summary:
+${summary}
 
-You can view the full call details in your dashboard.
+`;
+        }
+
+        if (tourBooked && tourDate) {
+            const tourDateStr = new Date(tourDate).toLocaleString(undefined, { 
+                dateStyle: 'full', 
+                timeStyle: 'short' 
+            });
+            emailBody += `Tour Booking:
+- Tour Scheduled: ${tourDateStr}
+${tourNotes ? `- Notes: ${tourNotes}\n` : ''}
+`;
+        }
+
+        emailBody += `You can view the full call details in your dashboard.
 
 Best regards,
 Montessori Enrollment AI Platform`;
