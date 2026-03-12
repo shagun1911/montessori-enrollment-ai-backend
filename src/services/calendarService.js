@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { google } = require('googleapis');
 const axios = require('axios');
+const mongoose = require('mongoose');
 const Integration = require('../models/Integration');
 const TourBooking = require('../models/TourBooking');
 
@@ -225,8 +226,13 @@ async function createCalendarEvent(schoolId, opts) {
         return { success: true, message: 'Calendar sync disabled' };
     }
 
+    // Convert schoolId to ObjectId if it's a string
+    const schoolObjectId = mongoose.Types.ObjectId.isValid(schoolId) 
+        ? (schoolId instanceof mongoose.Types.ObjectId ? schoolId : new mongoose.Types.ObjectId(schoolId))
+        : schoolId;
+
     const integrationCriteria = {
-        schoolId: new require('mongoose').Types.ObjectId(schoolId),
+        schoolId: schoolObjectId,
         connected: true,
         type: { $in: ['google', 'outlook'] }
     };
@@ -251,7 +257,7 @@ async function createCalendarEvent(schoolId, opts) {
 
     if (!integrations || integrations.length === 0) {
         // Check if there are any integrations at all for this school
-        const allIntegrations = await Integration.find({ schoolId: new require('mongoose').Types.ObjectId(schoolId) }).lean();
+        const allIntegrations = await Integration.find({ schoolId: schoolObjectId }).lean();
         console.warn(`[Calendar] No connected integration found for preference: ${preference}`);
         console.warn(`[Calendar] Total integrations for school: ${allIntegrations.length}`);
         if (allIntegrations.length > 0) {

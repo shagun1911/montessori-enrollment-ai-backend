@@ -448,9 +448,37 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             return;
         }
 
-        const school = await School.findById(schoolId).select('name adminEmail').lean();
-        if (!school || !school.adminEmail || !school.adminEmail.trim()) {
-            console.log('[Webhook Email] Admin email not configured, skipping notification');
+        // schoolId might be ObjectId or string, handle both
+        let schoolObjectId = schoolId;
+        if (typeof schoolId === 'string' && mongoose.Types.ObjectId.isValid(schoolId)) {
+            schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        } else if (!(schoolId instanceof mongoose.Types.ObjectId)) {
+            schoolObjectId = schoolId;
+        }
+
+        console.log(`[Webhook Email] Looking up school with ID: ${schoolObjectId} (type: ${typeof schoolObjectId})`);
+        
+        const school = await School.findById(schoolObjectId).select('name adminEmail').lean();
+        
+        console.log(`[Webhook Email] School found: ${school ? school.name : 'Not found'}`);
+        console.log(`[Webhook Email] Admin email from DB: "${school?.adminEmail || 'Not set'}"`);
+        console.log(`[Webhook Email] Admin email length: ${school?.adminEmail?.length || 0}`);
+        console.log(`[Webhook Email] Admin email trimmed: "${school?.adminEmail?.trim() || ''}"`);
+        
+        if (!school) {
+            console.warn('[Webhook Email] School not found in database');
+            return;
+        }
+        
+        if (!school.adminEmail || !school.adminEmail.trim()) {
+            console.log('[Webhook Email] Admin email not configured for this school, skipping notification');
+            // Let's also check all schools to see if any have adminEmail set
+            const allSchools = await School.find({}).select('name adminEmail').lean();
+            const schoolsWithEmail = allSchools.filter(s => s.adminEmail && s.adminEmail.trim());
+            console.log(`[Webhook Email] Total schools with admin email configured: ${schoolsWithEmail.length}`);
+            if (schoolsWithEmail.length > 0) {
+                console.log(`[Webhook Email] Schools with email:`, schoolsWithEmail.map(s => `${s.name}: ${s.adminEmail}`).join(', '));
+            }
             return;
         }
 
