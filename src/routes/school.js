@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const axios = require('axios');
+const FormData = require('form-data');
 const School = require('../models/School');
 const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
@@ -63,7 +64,7 @@ async function deleteKnowledgeBaseDocument(documentId) {
 }
 
 // Helper function to ingest a knowledge base document to ElevenLabs
-async function ingestKnowledgeBaseDocument(text, name) {
+async function ingestKnowledgeBaseDocument(text, schoolName) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
         console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB ingestion');
@@ -72,23 +73,29 @@ async function ingestKnowledgeBaseDocument(text, name) {
     
     try {
         const url = `${baseUrl}/api/v1/knowledge-base/ingest`;
-        const payload = {
-            source_type: 'text',
-            text: text,
-            name: name || 'School Knowledge Base',
-            parent_folder_id: null
-        };
+        
+        // Generate document name on backend
+        const documentName = `${schoolName} - Knowledge Base`;
+        
+        // Create FormData
+        const formData = new FormData();
+        formData.append('source_type', 'text');
+        formData.append('text', text);
+        formData.append('name', documentName);
+        // parent_folder_id is optional, so we don't append it if null
         
         console.log(`[KB POST] Request URL: ${url}`);
-        console.log(`[KB POST] Request Payload:`, JSON.stringify({
-            ...payload,
-            text: text.substring(0, 200) + (text.length > 200 ? '...' : '') // Log first 200 chars of text
-        }, null, 2));
-        console.log(`[KB POST] Full Text Length: ${text.length} characters`);
+        console.log(`[KB POST] FormData Payload:`);
+        console.log(`[KB POST]   - source_type: text`);
+        console.log(`[KB POST]   - name: ${documentName}`);
+        console.log(`[KB POST]   - text: ${text.length} characters`);
+        console.log(`[KB POST]   - text preview (first 200 chars): ${text.substring(0, 200)}${text.length > 200 ? '...' : ''}`);
+        console.log(`[KB POST]   - text preview (last 200 chars): ${text.length > 200 ? '...' + text.substring(text.length - 200) : text}`);
+        console.log(`[KB POST] FormData Headers:`, formData.getHeaders());
         
-        const response = await axios.post(url, payload, {
+        const response = await axios.post(url, formData, {
             headers: {
-                'Content-Type': 'application/json'
+                ...formData.getHeaders()
             }
         });
         
@@ -591,8 +598,8 @@ router.put('/settings', async (req, res) => {
                 if (qaPairs.length > 0) {
                     const kbText = formatQAPairsForKB(school.qaPairs);
                     if (kbText) { // Only create if we have valid text
-                        const kbName = `${school.name} - Knowledge Base`;
-                        const newDocumentId = await ingestKnowledgeBaseDocument(kbText, kbName);
+                        // Pass school name to generate document name on backend
+                        const newDocumentId = await ingestKnowledgeBaseDocument(kbText, school.name);
                         
                         // Step 3: Store the new document_id
                         if (newDocumentId) {
