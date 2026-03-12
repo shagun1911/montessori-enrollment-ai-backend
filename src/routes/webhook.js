@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const School = require('../models/School');
+const User = require('../models/User');
 const TourBooking = require('../models/TourBooking');
 const Followup = require('../models/Followup');
 const { processTranscript } = require('../services/openaiService');
@@ -392,7 +393,26 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         }
 
         // Get school name for event title
-        const school = await School.findById(schoolId).select('name').lean();
+        const school = await School.findById(schoolId).select('name preferredCalendar').lean();
+        
+        console.log(`[Webhook Booking] School: ${school?.name || 'Unknown'}`);
+        console.log(`[Webhook Booking] Preferred Calendar: ${school?.preferredCalendar || 'google'}`);
+        console.log(`[Webhook Booking] Tour Date/Time: ${start.toISOString()}`);
+        console.log(`[Webhook Booking] Event Title: ${title}`);
+
+        // Check for connected integrations before attempting to create event
+        const Integration = require('../models/Integration');
+        const integrations = await Integration.find({
+            schoolId,
+            connected: true,
+            type: { $in: ['google', 'outlook'] }
+        }).select('type connected').lean();
+        
+        console.log(`[Webhook Booking] Found ${integrations.length} connected integration(s):`, 
+            integrations.map(i => `${i.type} (connected: ${i.connected})`).join(', ') || 'None');
+
+        // Create calendar event
+        console.log(`[Webhook Booking] Attempting to create calendar event with preference: ${school?.preferredCalendar || 'google'}...`);
         const title = `School Tour – ${parentName}`;
         const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
 
@@ -403,6 +423,8 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             endDateTime: end,
             description
         });
+        
+        console.log(`[Webhook Booking] Calendar event creation result:`, JSON.stringify(calResult, null, 2));
 
         // Create TourBooking record
         const tourBooking = await TourBooking.create({
@@ -458,31 +480,38 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
 
         console.log(`[Webhook Email] Looking up school with ID: ${schoolObjectId} (type: ${typeof schoolObjectId})`);
         
-        const school = await School.findById(schoolObjectId).select('name adminEmail').lean();
+        const school = await School.findById(schoolObjectId).select('name').lean();
         
         console.log(`[Webhook Email] School found: ${school ? school.name : 'Not found'}`);
-        console.log(`[Webhook Email] Admin email from DB: "${school?.adminEmail || 'Not set'}"`);
-        console.log(`[Webhook Email] Admin email length: ${school?.adminEmail?.length || 0}`);
-        console.log(`[Webhook Email] Admin email trimmed: "${school?.adminEmail?.trim() || ''}"`);
         
         if (!school) {
             console.warn('[Webhook Email] School not found in database');
             return;
         }
+
+        // Find the user associated with this school (the school admin user)
+        const schoolUser = await User.findOne({ 
+            schoolId: schoolObjectId, 
+            role: 'school' 
+        }).select('email name').lean();
         
-        if (!school.adminEmail || !school.adminEmail.trim()) {
-            console.log('[Webhook Email] Admin email not configured for this school, skipping notification');
-            // Let's also check all schools to see if any have adminEmail set
-            const allSchools = await School.find({}).select('name adminEmail').lean();
-            const schoolsWithEmail = allSchools.filter(s => s.adminEmail && s.adminEmail.trim());
-            console.log(`[Webhook Email] Total schools with admin email configured: ${schoolsWithEmail.length}`);
-            if (schoolsWithEmail.length > 0) {
-                console.log(`[Webhook Email] Schools with email:`, schoolsWithEmail.map(s => `${s.name}: ${s.adminEmail}`).join(', '));
+        console.log(`[Webhook Email] School user found: ${schoolUser ? schoolUser.name : 'Not found'}`);
+        console.log(`[Webhook Email] School user email: "${schoolUser?.email || 'Not set'}"`);
+        
+        if (!schoolUser || !schoolUser.email || !schoolUser.email.trim()) {
+            console.log('[Webhook Email] No school user email found for this school, skipping notification');
+            // Debug: show all school users
+            const allSchoolUsers = await User.find({ role: 'school' }).select('email name schoolId').lean();
+            console.log(`[Webhook Email] Total school users: ${allSchoolUsers.length}`);
+            if (allSchoolUsers.length > 0) {
+                const schoolsWithUsers = await School.find({ _id: { $in: allSchoolUsers.map(u => u.schoolId).filter(Boolean) } }).select('name').lean();
+                const schoolMap = new Map(schoolsWithUsers.map(s => [s._id.toString(), s.name]));
+                console.log(`[Webhook Email] School users:`, allSchoolUsers.map(u => `${schoolMap.get(u.schoolId?.toString()) || 'Unknown'}: ${u.email}`).join(', '));
             }
             return;
         }
 
-        const adminEmail = school.adminEmail.trim();
+        const adminEmail = schoolUser.email.trim();
         
         // Get email transport
         const host = process.env.SMTP_HOST;

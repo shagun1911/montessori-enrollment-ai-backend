@@ -237,8 +237,16 @@ async function createCalendarEvent(schoolId, opts) {
         type: { $in: ['google', 'outlook'] }
     };
 
-    if (preference === 'google') integrationCriteria.type = 'google';
-    else if (preference === 'outlook') integrationCriteria.type = 'outlook';
+    // Set the type filter based on preference
+    if (preference === 'google') {
+        integrationCriteria.type = 'google';
+    } else if (preference === 'outlook') {
+        integrationCriteria.type = 'outlook';
+    } else if (preference === 'both') {
+        // Keep both types in the $in array
+        integrationCriteria.type = { $in: ['google', 'outlook'] };
+    }
+    // If preference is 'none', we already returned earlier
 
     console.log(`[Calendar] Searching for integrations with criteria:`, JSON.stringify({
         schoolId: schoolId.toString(),
