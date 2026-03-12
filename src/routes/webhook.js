@@ -298,41 +298,59 @@ JSON Response:`;
 }
 
 /**
- * Find school by phone number or agent ID
+ * Find school by phone number from webhook data
+ * No fallback - only matches by phone number to ensure correct school
  */
 async function findSchoolForWebhook(webhook) {
     try {
         // Try to find school by phone number from user_id or metadata
         const phoneNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || '';
         
-        if (phoneNumber) {
-            const normalizedPhone = normalizePhone(phoneNumber);
-            if (normalizedPhone) {
-                const allSchools = await School.find({}).select('_id aiNumber twilioPhoneNumber').lean();
-                const school = allSchools.find(s => {
-                    const schoolAiNumber = normalizePhone(s.aiNumber || '');
-                    const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
-                    return schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
-                });
-                
-                if (school) {
-                    console.log(`[Webhook] Found school by phone number: ${school._id}`);
-                    return school._id;
-                }
+        if (!phoneNumber) {
+            console.warn('[Webhook] No phone number found in webhook data (user_id or metadata.phone_call.external_number)');
+            console.warn('[Webhook] Webhook data:', {
+                user_id: webhook.user_id,
+                external_number: webhook.metadata?.phone_call?.external_number
+            });
+            return null;
+        }
+
+        const normalizedPhone = normalizePhone(phoneNumber);
+        if (!normalizedPhone) {
+            console.warn(`[Webhook] Could not normalize phone number: ${phoneNumber}`);
+            return null;
+        }
+
+        console.log(`[Webhook] Searching for school with phone number: ${normalizedPhone}`);
+        
+        // Get all schools and match by aiNumber or twilioPhoneNumber
+        const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
+        
+        const matchedSchool = allSchools.find(s => {
+            const schoolAiNumber = normalizePhone(s.aiNumber || '');
+            const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
+            const matches = schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
+            
+            if (matches) {
+                console.log(`[Webhook] Phone match found: ${normalizedPhone} matches school "${s.name}" (ID: ${s._id})`);
+                console.log(`[Webhook] School AI Number: ${s.aiNumber || 'N/A'}, Twilio Number: ${s.twilioPhoneNumber || 'N/A'}`);
             }
+            
+            return matches;
+        });
+        
+        if (matchedSchool) {
+            console.log(`[Webhook] Found school by phone number: ${matchedSchool.name} (${matchedSchool._id})`);
+            return matchedSchool._id;
         }
 
-        // If phone number doesn't work, try to find by agent_id
-        // Since AGENT_ID is in env, we could find the school that way
-        // But for now, let's try to find any active school (fallback)
-        // In production, you might want to store agent_id -> schoolId mapping
-        const activeSchool = await School.findOne({ status: 'active' }).select('_id').lean();
-        if (activeSchool) {
-            console.log(`[Webhook] Using fallback active school: ${activeSchool._id}`);
-            return activeSchool._id;
-        }
-
-        console.warn('[Webhook] Could not find school for webhook');
+        // No school found - log all available schools for debugging
+        console.warn(`[Webhook] Could not find school matching phone number: ${normalizedPhone}`);
+        console.warn(`[Webhook] Available schools with phone numbers:`);
+        allSchools.forEach(s => {
+            console.warn(`  - ${s.name} (ID: ${s._id}): AI=${s.aiNumber || 'N/A'}, Twilio=${s.twilioPhoneNumber || 'N/A'}`);
+        });
+        
         return null;
     } catch (err) {
         console.error('[Webhook] Error finding school:', err);
@@ -392,8 +410,10 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             return;
         }
 
-        // Get school name for event title
+        // Get school name and preferred calendar for event title
         const school = await School.findById(schoolId).select('name preferredCalendar').lean();
+        const title = `School Tour – ${parentName}`;
+        const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
         
         console.log(`[Webhook Booking] School: ${school?.name || 'Unknown'}`);
         console.log(`[Webhook Booking] Preferred Calendar: ${school?.preferredCalendar || 'google'}`);
@@ -413,8 +433,6 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
 
         // Create calendar event
         console.log(`[Webhook Booking] Attempting to create calendar event with preference: ${school?.preferredCalendar || 'google'}...`);
-        const title = `School Tour – ${parentName}`;
-        const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
 
         // Create calendar event
         const calResult = await createCalendarEvent(schoolId, {
