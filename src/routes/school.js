@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const axios = require('axios');
 const School = require('../models/School');
 const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
@@ -9,6 +10,7 @@ const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
+const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
@@ -17,6 +19,93 @@ const router = express.Router();
 
 // Apply auth middleware to all school routes
 router.use(authMiddleware, schoolOnly);
+
+// Helper function to format Q&A pairs into text for knowledge base ingestion
+function formatQAPairsForKB(qaPairs) {
+    if (!Array.isArray(qaPairs) || qaPairs.length === 0) {
+        return '';
+    }
+    
+    return qaPairs
+        .filter(pair => pair.question && pair.answer)
+        .map((pair, index) => {
+            return `Q${index + 1}: ${pair.question}\nA${index + 1}: ${pair.answer}`;
+        })
+        .join('\n\n');
+}
+
+// Helper function to delete a knowledge base document from ElevenLabs
+async function deleteKnowledgeBaseDocument(documentId) {
+    if (!documentId) return;
+    
+    const baseUrl = process.env.ELEVENLABS_API_URL;
+    if (!baseUrl) {
+        console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB delete');
+        return;
+    }
+    
+    try {
+        const url = `${baseUrl}/api/v1/knowledge-base/${documentId}`;
+        console.log(`[KB DELETE] Request URL: ${url}`);
+        console.log(`[KB DELETE] Document ID: ${documentId}`);
+        
+        const response = await axios.delete(url);
+        console.log(`[KB DELETE] Response Status: ${response.status}`);
+        console.log(`[KB DELETE] Response Data:`, JSON.stringify(response.data, null, 2));
+        console.log(`[KB] Successfully deleted document ${documentId}`);
+    } catch (err) {
+        console.error(`[KB DELETE] Failed to delete document ${documentId}`);
+        console.error(`[KB DELETE] Error Status:`, err.response?.status);
+        console.error(`[KB DELETE] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
+        console.error(`[KB DELETE] Error Message:`, err.message);
+        // Don't throw - we'll continue to create new document
+    }
+}
+
+// Helper function to ingest a knowledge base document to ElevenLabs
+async function ingestKnowledgeBaseDocument(text, name) {
+    const baseUrl = process.env.ELEVENLABS_API_URL;
+    if (!baseUrl) {
+        console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB ingestion');
+        return null;
+    }
+    
+    try {
+        const url = `${baseUrl}/api/v1/knowledge-base/ingest`;
+        const payload = {
+            source_type: 'text',
+            text: text,
+            name: name || 'School Knowledge Base',
+            parent_folder_id: null
+        };
+        
+        console.log(`[KB POST] Request URL: ${url}`);
+        console.log(`[KB POST] Request Payload:`, JSON.stringify({
+            ...payload,
+            text: text.substring(0, 200) + (text.length > 200 ? '...' : '') // Log first 200 chars of text
+        }, null, 2));
+        console.log(`[KB POST] Full Text Length: ${text.length} characters`);
+        
+        const response = await axios.post(url, payload, {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        console.log(`[KB POST] Response Status: ${response.status}`);
+        console.log(`[KB POST] Response Data:`, JSON.stringify(response.data, null, 2));
+        
+        const documentId = response.data?.document_id || response.data?.id;
+        console.log(`[KB] Successfully ingested document: ${documentId}`);
+        return documentId;
+    } catch (err) {
+        console.error(`[KB POST] Failed to ingest document`);
+        console.error(`[KB POST] Error Status:`, err.response?.status);
+        console.error(`[KB POST] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
+        console.error(`[KB POST] Error Message:`, err.message);
+        throw err;
+    }
+}
 
 // GET /api/school/dashboard - School-specific metrics
 router.get('/dashboard', async (req, res) => {
@@ -28,6 +117,24 @@ router.get('/dashboard', async (req, res) => {
 
         const school = await School.findById(schoolId).select('aiNumber').lean();
         const toursBooked = await TourBooking.countDocuments({ schoolId });
+
+        // Get webhook data (transcription webhooks with summaries)
+        const webhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            ai_processed: true
+        })
+            .sort({ received_at: -1 })
+            .limit(50)
+            .lean();
+
+        // Normalize phone number helper
+        function normalizePhone(phone) {
+            if (!phone) return '';
+            return phone.replace(/\D/g, '');
+        }
+
+        // Get school's AI number for matching
+        const schoolAiNumber = school?.aiNumber ? normalizePhone(school.aiNumber) : '';
 
         let calls = [];
         if (school && school.aiNumber) {
@@ -54,6 +161,80 @@ router.get('/dashboard', async (req, res) => {
                 callType: 'inquiry'
             }));
         }
+
+        // Also include webhook calls that might not be in voiceAI DB
+        // Match webhooks by phone number or include all if we can't match
+        const webhookCalls = webhooks
+            .filter(wh => {
+                // Try to match by phone number if available
+                const webhookPhone = normalizePhone(wh.user_id || '');
+                // Include if phone matches school AI number pattern or if we can't determine
+                return !webhookPhone || webhookPhone.includes(schoolAiNumber) || schoolAiNumber === '';
+            })
+            .map(wh => {
+                const callTimestamp = wh.metadata?.start_time_unix_secs 
+                    ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                    : wh.received_at;
+                
+                const duration = wh.metadata?.phone_call?.call_duration_secs || 0;
+                
+                return {
+                    id: wh._id.toString(),
+                    conversationId: wh.conversation_id,
+                    callerPhone: wh.user_id || 'Unknown',
+                    callerName: 'Parent',
+                    duration: duration,
+                    timestamp: callTimestamp,
+                    recordingUrl: null, // Audio is stored as base64, not URL
+                    callType: 'inquiry',
+                    summary: wh.summary || '',
+                    tourBookingDetected: wh.tour_booking_detected || false,
+                    tourBookingDate: wh.tour_booking_date || null,
+                    aiProcessed: wh.ai_processed || false
+                };
+            });
+
+        // Merge calls and webhook calls, deduplicate by timestamp/phone
+        const allCallsMap = new Map();
+        
+        // Add voiceAI calls
+        calls.forEach(call => {
+            const key = `${normalizePhone(call.callerPhone)}_${new Date(call.timestamp).getTime()}`;
+            if (!allCallsMap.has(key)) {
+                allCallsMap.set(key, {
+                    ...call,
+                    summary: '',
+                    tourBookingDetected: false,
+                    tourBookingDate: null,
+                    aiProcessed: false
+                });
+            }
+        });
+
+        // Add/update with webhook calls (they have summaries)
+        webhookCalls.forEach(call => {
+            const key = `${normalizePhone(call.callerPhone)}_${new Date(call.timestamp).getTime()}`;
+            if (allCallsMap.has(key)) {
+                // Update existing call with webhook data
+                const existing = allCallsMap.get(key);
+                allCallsMap.set(key, {
+                    ...existing,
+                    summary: call.summary,
+                    tourBookingDetected: call.tourBookingDetected,
+                    tourBookingDate: call.tourBookingDate,
+                    aiProcessed: call.aiProcessed,
+                    conversationId: call.conversationId
+                });
+            } else {
+                // Add new webhook call
+                allCallsMap.set(key, call);
+            }
+        });
+
+        // Convert back to array and sort by timestamp
+        calls = Array.from(allCallsMap.values()).sort((a, b) => 
+            new Date(b.timestamp) - new Date(a.timestamp)
+        );
 
         const totalCalls = calls.length;
         const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
@@ -86,12 +267,17 @@ router.get('/dashboard', async (req, res) => {
 
         const recentCalls = calls.slice(0, 10).map(c => ({
             id: c.id,
+            conversationId: c.conversationId || null,
             callerName: c.callerName,
             callerPhone: c.callerPhone,
             callType: c.callType,
             duration: Math.round(c.duration),
             timestamp: c.timestamp,
             recordingUrl: c.recordingUrl,
+            summary: c.summary || '',
+            tourBookingDetected: c.tourBookingDetected || false,
+            tourBookingDate: c.tourBookingDate || null,
+            aiProcessed: c.aiProcessed || false
         }));
 
         res.json({
@@ -310,6 +496,7 @@ router.get('/settings', async (req, res) => {
             smsTemplate: school.smsTemplate || 'Thank you for your interest in our school! Please complete our inquiry form here: {form_link}',
             emailTemplate: school.emailTemplate || 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment at {school_name}.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}',
             qaPairs,
+            knowledgeBaseDocumentId: school.knowledgeBaseDocumentId || '',
             preferredCalendar: school.preferredCalendar || 'google',
             googleConnected,
             outlookConnected,
@@ -363,13 +550,63 @@ router.put('/settings', async (req, res) => {
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
 
+        // Check if qaPairs changed
+        let qaPairsChanged = false;
         if (Array.isArray(qaPairs)) {
-            // splice-replace: most reliable way to update a Mongoose subdoc array
-            school.qaPairs.splice(0, school.qaPairs.length, ...qaPairs.map(p => ({
+            const newQAPairs = qaPairs.map(p => ({
                 question: p.question || '',
                 answer: p.answer || ''
-            })));
+            }));
+            
+            // Compare old and new qaPairs to detect changes
+            const oldQAPairs = school.qaPairs || [];
+            if (oldQAPairs.length !== newQAPairs.length) {
+                qaPairsChanged = true;
+            } else {
+                // Deep compare each pair
+                for (let i = 0; i < newQAPairs.length; i++) {
+                    if (oldQAPairs[i]?.question !== newQAPairs[i].question ||
+                        oldQAPairs[i]?.answer !== newQAPairs[i].answer) {
+                        qaPairsChanged = true;
+                        break;
+                    }
+                }
+            }
+            
+            // Update qaPairs
+            school.qaPairs.splice(0, school.qaPairs.length, ...newQAPairs);
             console.log('[PUT /settings] qaPairs set on document:', school.qaPairs.length);
+        }
+
+        // Sync with ElevenLabs Knowledge Base if qaPairs changed
+        if (qaPairsChanged && Array.isArray(qaPairs)) {
+            try {
+                // Step 1: Delete old KB document only if document_id exists and is not empty
+                if (school.knowledgeBaseDocumentId && school.knowledgeBaseDocumentId.trim() !== '') {
+                    await deleteKnowledgeBaseDocument(school.knowledgeBaseDocumentId);
+                    school.knowledgeBaseDocumentId = ''; // Clear the document_id
+                }
+                
+                // Step 2: Create new KB document only if there are Q&A pairs
+                if (qaPairs.length > 0) {
+                    const kbText = formatQAPairsForKB(school.qaPairs);
+                    if (kbText) { // Only create if we have valid text
+                        const kbName = `${school.name} - Knowledge Base`;
+                        const newDocumentId = await ingestKnowledgeBaseDocument(kbText, kbName);
+                        
+                        // Step 3: Store the new document_id
+                        if (newDocumentId) {
+                            school.knowledgeBaseDocumentId = newDocumentId;
+                            console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
+                        }
+                    }
+                } else {
+                    console.log('[PUT /settings] All Q&A pairs removed, KB document deleted');
+                }
+            } catch (err) {
+                console.error('[PUT /settings] KB sync failed:', err);
+                // Continue saving settings even if KB sync fails
+            }
         }
 
         await school.save();

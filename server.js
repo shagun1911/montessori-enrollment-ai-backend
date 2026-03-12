@@ -10,6 +10,7 @@ const voiceRoutes = require('./src/routes/voice');
 const integrationRoutes = require('./src/routes/integrations');
 const translateRoutes = require('./src/routes/translate');
 const publicRoutes = require('./src/routes/public');
+const webhookRoutes = require('./src/routes/webhook');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -32,6 +33,7 @@ app.use('/api/voice', voiceRoutes);
 app.use('/api/integrations', integrationRoutes.router);
 app.use('/api', translateRoutes);
 app.use('/api/public', publicRoutes);
+app.use('/api/v1/webhook', webhookRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

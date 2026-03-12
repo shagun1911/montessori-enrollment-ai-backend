@@ -24,6 +24,7 @@ const schoolSchema = new mongoose.Schema({
         question: { type: String, default: '' },
         answer: { type: String, default: '' }
     }],
+    knowledgeBaseDocumentId: { type: String, default: '' },
     preferredCalendar: { type: String, enum: ['google', 'outlook', 'both', 'none'], default: 'google' },
     address: { type: String, default: '' }
 }, { timestamps: true });
