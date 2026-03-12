@@ -607,7 +607,7 @@ router.put('/settings', async (req, res) => {
         }
 
         const {
-            aiNumber, routingNumber, escalationNumber, language, script,
+            aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,

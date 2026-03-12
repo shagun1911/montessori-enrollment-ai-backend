@@ -1,6 +1,10 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
+const School = require('../models/School');
+const TourBooking = require('../models/TourBooking');
 const { processTranscript } = require('../services/openaiService');
+const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
 
 const router = express.Router();
 
@@ -172,6 +176,11 @@ async function processTranscriptWithAI(webhookId, transcriptArray) {
         
         if (aiResult.tour_booking_detected && aiResult.tour_booking_date) {
             console.log(`[Webhook AI] Tour booking date: ${aiResult.tour_booking_date}`);
+            
+            // Automatically create calendar booking
+            await createTourBookingFromWebhook(updatedWebhook, aiResult).catch(err => {
+                console.error('[Webhook AI] Error creating tour booking:', err);
+            });
         }
 
         return updatedWebhook;
@@ -190,6 +199,231 @@ async function processTranscriptWithAI(webhookId, transcriptArray) {
         } catch (updateErr) {
             console.error('[Webhook AI] Failed to update error status:', updateErr);
         }
+        throw err;
+    }
+}
+
+/**
+ * Helper function to normalize phone number
+ */
+function normalizePhone(phone) {
+    if (!phone || typeof phone !== 'string') return '';
+    const trimmed = phone.trim().replace(/[\s\-\(\)]/g, '');
+    if (!trimmed) return '';
+    return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
+}
+
+/**
+ * Extract parent information from transcript using OpenAI
+ */
+async function extractParentInfo(transcriptArray) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+        console.warn('[Webhook] OPENAI_API_KEY not configured, skipping parent info extraction');
+        return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+    }
+
+    try {
+        const { formatTranscript } = require('../services/openaiService');
+        const transcriptText = formatTranscript(transcriptArray);
+        if (!transcriptText || transcriptText.trim().length === 0) {
+            return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+        }
+
+        const axios = require('axios');
+        const prompt = `You are analyzing a phone call transcript between a school enrollment AI agent and a parent.
+
+Extract the following information about the parent/caller:
+- Parent's name
+- Phone number (if mentioned)
+- Email address (if mentioned)
+- Child's age (if mentioned)
+- Reason for inquiry (if mentioned)
+
+Respond ONLY with a JSON object in this exact format:
+{
+  "parent_name": "name or empty string",
+  "phone": "phone number or empty string",
+  "email": "email address or empty string",
+  "child_age": "child age or empty string",
+  "reason": "reason for inquiry or empty string"
+}
+
+Transcript:
+${transcriptText}
+
+JSON Response:`;
+
+        const response = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                model: 'gpt-4o-mini',
+                messages: [{ role: 'user', content: prompt }],
+                max_tokens: 200,
+                temperature: 0.3,
+                response_format: { type: 'json_object' }
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        const content = response.data?.choices?.[0]?.message?.content?.trim();
+        if (!content) {
+            return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+        }
+
+        const info = JSON.parse(content);
+        return {
+            parentName: info.parent_name || '',
+            phone: info.phone || '',
+            email: info.email || '',
+            childAge: info.child_age || '',
+            reason: info.reason || ''
+        };
+    } catch (err) {
+        console.error('[Webhook] Error extracting parent info:', err.message);
+        return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+    }
+}
+
+/**
+ * Find school by phone number or agent ID
+ */
+async function findSchoolForWebhook(webhook) {
+    try {
+        // Try to find school by phone number from user_id or metadata
+        const phoneNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || '';
+        
+        if (phoneNumber) {
+            const normalizedPhone = normalizePhone(phoneNumber);
+            if (normalizedPhone) {
+                const allSchools = await School.find({}).select('_id aiNumber twilioPhoneNumber').lean();
+                const school = allSchools.find(s => {
+                    const schoolAiNumber = normalizePhone(s.aiNumber || '');
+                    const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
+                    return schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
+                });
+                
+                if (school) {
+                    console.log(`[Webhook] Found school by phone number: ${school._id}`);
+                    return school._id;
+                }
+            }
+        }
+
+        // If phone number doesn't work, try to find by agent_id
+        // Since AGENT_ID is in env, we could find the school that way
+        // But for now, let's try to find any active school (fallback)
+        // In production, you might want to store agent_id -> schoolId mapping
+        const activeSchool = await School.findOne({ status: 'active' }).select('_id').lean();
+        if (activeSchool) {
+            console.log(`[Webhook] Using fallback active school: ${activeSchool._id}`);
+            return activeSchool._id;
+        }
+
+        console.warn('[Webhook] Could not find school for webhook');
+        return null;
+    } catch (err) {
+        console.error('[Webhook] Error finding school:', err);
+        return null;
+    }
+}
+
+/**
+ * Create tour booking from webhook when OpenAI detects a booking
+ */
+async function createTourBookingFromWebhook(webhook, aiResult) {
+    try {
+        console.log('[Webhook Booking] Starting automatic tour booking creation...');
+        
+        // Find school
+        const schoolId = await findSchoolForWebhook(webhook);
+        if (!schoolId) {
+            console.warn('[Webhook Booking] Cannot create booking: school not found');
+            return;
+        }
+
+        // Extract parent info from transcript
+        const parentInfo = await extractParentInfo(webhook.transcript || []);
+        console.log('[Webhook Booking] Extracted parent info:', parentInfo);
+
+        // Use phone from webhook if parent info doesn't have it
+        const phone = parentInfo.phone || webhook.user_id || '';
+        const parentName = parentInfo.parentName || 'Parent';
+
+        // Get tour booking date
+        const tourDate = aiResult.tour_booking_date;
+        if (!tourDate || isNaN(new Date(tourDate).getTime())) {
+            console.warn('[Webhook Booking] Invalid tour booking date');
+            return;
+        }
+
+        const start = new Date(tourDate);
+        const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-minute slot
+
+        // Check slot availability
+        const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
+        if (!available) {
+            console.warn(`[Webhook Booking] Slot not available: ${slotError || 'Time slot is already booked'}`);
+            // Still create the booking record but mark it as unavailable
+            await TourBooking.create({
+                schoolId,
+                parentName,
+                phone: phone || '',
+                email: parentInfo.email || '',
+                childAge: parentInfo.childAge || '',
+                reason: parentInfo.reason || '',
+                scheduledAt: start,
+                calendarEventId: '',
+                calendarProvider: '',
+            });
+            console.log('[Webhook Booking] Tour booking created but calendar event not created (slot unavailable)');
+            return;
+        }
+
+        // Get school name for event title
+        const school = await School.findById(schoolId).select('name').lean();
+        const title = `School Tour – ${parentName}`;
+        const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
+
+        // Create calendar event
+        const calResult = await createCalendarEvent(schoolId, {
+            title,
+            startDateTime: start,
+            endDateTime: end,
+            description
+        });
+
+        // Create TourBooking record
+        const tourBooking = await TourBooking.create({
+            schoolId,
+            parentName,
+            phone: phone || '',
+            email: parentInfo.email || '',
+            childAge: parentInfo.childAge || '',
+            reason: parentInfo.reason || '',
+            scheduledAt: start,
+            calendarEventId: calResult.success ? calResult.eventId : '',
+            calendarProvider: calResult.success ? calResult.provider : '',
+        });
+
+        console.log(`[Webhook Booking] Tour booking created successfully!`);
+        console.log(`[Webhook Booking] Tour Booking ID: ${tourBooking._id}`);
+        console.log(`[Webhook Booking] Scheduled At: ${start}`);
+        console.log(`[Webhook Booking] Calendar Event Created: ${calResult.success ? 'Yes' : 'No'}`);
+        if (calResult.success) {
+            console.log(`[Webhook Booking] Calendar Provider: ${calResult.provider}`);
+            console.log(`[Webhook Booking] Calendar Event ID: ${calResult.eventId}`);
+        }
+
+        return tourBooking;
+
+    } catch (err) {
+        console.error('[Webhook Booking] Error creating tour booking:', err);
         throw err;
     }
 }
