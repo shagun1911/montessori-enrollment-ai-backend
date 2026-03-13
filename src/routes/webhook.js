@@ -298,93 +298,75 @@ JSON Response:`;
 }
 
 /**
- * Find school by phone number or agent ID from webhook data
- * Falls back to agent ID matching if phone number matching fails
+ * Find school by called phone number (aiNumber) or by elevenlabsAgentId stored on the school.
+ * Priority:
+ *   1. Match metadata.phone_call.to_number against school.aiNumber  (phone calls)
+ *   2. Match webhook.agent_id against school.elevenlabsAgentId        (SDK / widget calls)
+ * No hardcoded IDs anywhere.
  */
 async function findSchoolForWebhook(webhook) {
     try {
-        // Extract the number called (the school's number) from metadata
+        // ── Strategy 1: Phone-call match by called number ──────────────────
         const phoneCall = webhook.metadata?.phone_call || {};
         const calledNumber = phoneCall.to_number || phoneCall.external_number || '';
-        
+
         if (calledNumber) {
             const normalizedCalled = normalizePhone(calledNumber);
             if (normalizedCalled) {
-                console.log(`[Webhook] Searching for school with called number: ${normalizedCalled}`);
-                
-                // Get all schools (regardless of status for now to ensure matching)
-                const allSchools = await School.find({}).select('_id name aiNumber twilioPhoneNumber status').lean();
-                
+                console.log(`[Webhook] Strategy 1 – searching by called number: ${normalizedCalled}`);
+
+                const allSchools = await School.find({}).select('_id name aiNumber status').lean();
                 const matchedSchool = allSchools.find(s => {
                     const schoolAiNumber = normalizePhone(s.aiNumber || '');
-                    const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
-                    const matches = schoolAiNumber === normalizedCalled || schoolTwilioNumber === normalizedCalled;
-                    
-                    if (matches) {
-                        console.log(`[Webhook] Match found: ${normalizedCalled} matches school "${s.name}" (ID: ${s._id}, Status: ${s.status})`);
-                    }
-                    
-                    return matches;
+                    return schoolAiNumber === normalizedCalled;
                 });
-                
+
                 if (matchedSchool) {
-                    console.log(`[Webhook] Found school by phone number matching: ${matchedSchool.name} (${matchedSchool._id})`);
+                    console.log(`[Webhook] Found school by aiNumber: "${matchedSchool.name}" (${matchedSchool._id}, status: ${matchedSchool.status})`);
                     return matchedSchool._id;
                 }
+
+                console.warn(`[Webhook] No school matched called number: ${normalizedCalled}`);
             }
         }
 
-        // Fallback: Try to match by agent ID
+        // ── Strategy 2: Agent ID match via elevenlabsAgentId on school ─────
         const agentId = webhook.agent_id || '';
-        const envAgentId = process.env.AGENT_ID || '';
-        
-        if (agentId && envAgentId && agentId === envAgentId) {
-            console.log(`[Webhook] Agent ID match found: ${agentId} matches AGENT_ID from environment`);
-            
-            // TODO: For now, hardcode to specific school ID
-            // In the future, add agentId field to School model for proper matching
-            const hardcodedSchoolId = '69a2a7bf84844ca0d53116d6';
-            
-            // Verify the school exists
-            const school = await School.findById(hardcodedSchoolId).select('_id name status').lean();
-            if (school && school.status === 'active') {
-                console.log(`[Webhook] Using hardcoded school: ${school.name} (${school._id})`);
-                return school._id;
-            } else {
-                console.warn(`[Webhook] Hardcoded school ID ${hardcodedSchoolId} not found or not active`);
+        if (agentId) {
+            console.log(`[Webhook] Strategy 2 – searching by elevenlabsAgentId: ${agentId}`);
+
+            const matchedSchool = await School.findOne({ elevenlabsAgentId: agentId })
+                .select('_id name status')
+                .lean();
+
+            if (matchedSchool) {
+                console.log(`[Webhook] Found school by elevenlabsAgentId: "${matchedSchool.name}" (${matchedSchool._id}, status: ${matchedSchool.status})`);
+                return matchedSchool._id;
             }
-        } else if (agentId) {
-            console.log(`[Webhook] Agent ID from webhook (${agentId}) does not match AGENT_ID from environment (${envAgentId || 'not set'})`);
+
+            console.warn(`[Webhook] No school has elevenlabsAgentId = "${agentId}"`);
         }
 
-        // Final fallback: Use hardcoded school ID if agent ID matches or if no other match found
-        const hardcodedSchoolId = '69a2a7bf84844ca0d53116d6';
-        const school = await School.findById(hardcodedSchoolId).select('_id name status').lean();
-        if (school && school.status === 'active') {
-            console.log(`[Webhook] Using hardcoded school as fallback: ${school.name} (${school._id})`);
-            return school._id;
-        }
-
-        // No school found - log all available schools for debugging
-        const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
-        console.warn(`[Webhook] Could not find school matching phone number or agent ID`);
-        console.warn(`[Webhook] Webhook data:`, {
-            user_id: webhook.user_id,
+        // ── No school found – log helpful debug info ───────────────────────
+        const allSchools = await School.find({}).select('_id name aiNumber elevenlabsAgentId').lean();
+        console.warn('[Webhook] Could not find school for this webhook.');
+        console.warn('[Webhook] Webhook data:', {
             agent_id: webhook.agent_id,
-            agent_name: webhook.agent_name,
-            external_number: webhook.metadata?.phone_call?.external_number
+            called_number: calledNumber || '(none – SDK call)',
+            user_id: webhook.user_id,
         });
-        console.warn(`[Webhook] Available schools with phone numbers:`);
+        console.warn('[Webhook] All schools in DB:');
         allSchools.forEach(s => {
-            console.warn(`  - ${s.name} (ID: ${s._id}): AI=${s.aiNumber || 'N/A'}, Twilio=${s.twilioPhoneNumber || 'N/A'}`);
+            console.warn(`  - "${s.name}" (${s._id}): aiNumber="${s.aiNumber || 'N/A'}", elevenlabsAgentId="${s.elevenlabsAgentId || 'NOT SET'}"`);
         });
-        
+
         return null;
     } catch (err) {
         console.error('[Webhook] Error finding school:', err);
         return null;
     }
 }
+
 
 /**
  * Create tour booking from webhook when OpenAI detects a booking

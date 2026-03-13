@@ -606,6 +606,7 @@ router.get('/settings', async (req, res) => {
             systemPrompt: school.systemPrompt || '',
             adminEmail: school.adminEmail || '',
             preferredCalendar: school.preferredCalendar || 'google',
+            elevenlabsAgentId: school.elevenlabsAgentId || '',
             googleConnected,
             outlookConnected,
         });
@@ -639,7 +640,7 @@ router.put('/settings', async (req, res) => {
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
-            qaPairs, preferredCalendar, adminEmail
+            qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId
         } = req.body;
 
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
@@ -659,6 +660,7 @@ router.put('/settings', async (req, res) => {
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
         if (adminEmail !== undefined) school.adminEmail = adminEmail;
+        if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
 
         // Check if qaPairs changed
         let qaPairsChanged = false;

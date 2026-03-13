@@ -28,7 +28,8 @@ const schoolSchema = new mongoose.Schema({
     knowledgeBaseDocumentId: { type: String, default: '' },
     preferredCalendar: { type: String, enum: ['google', 'outlook', 'both', 'none'], default: 'google' },
     address: { type: String, default: '' },
-    adminEmail: { type: String, default: '' } // Admin email for webhook notifications
+    adminEmail: { type: String, default: '' }, // Admin email for webhook notifications
+    elevenlabsAgentId: { type: String, default: '' } // ElevenLabs Agent ID for inbound call identification
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);
