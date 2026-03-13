@@ -303,32 +303,32 @@ JSON Response:`;
  */
 async function findSchoolForWebhook(webhook) {
     try {
-        // Try to find school by phone number from user_id or metadata
-        const phoneNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || '';
+        // Extract the number called (the school's number) from metadata
+        const phoneCall = webhook.metadata?.phone_call || {};
+        const calledNumber = phoneCall.to_number || phoneCall.external_number || '';
         
-        if (phoneNumber) {
-            const normalizedPhone = normalizePhone(phoneNumber);
-            if (normalizedPhone) {
-                console.log(`[Webhook] Searching for school with phone number: ${normalizedPhone}`);
+        if (calledNumber) {
+            const normalizedCalled = normalizePhone(calledNumber);
+            if (normalizedCalled) {
+                console.log(`[Webhook] Searching for school with called number: ${normalizedCalled}`);
                 
-                // Get all schools and match by aiNumber or twilioPhoneNumber
-                const allSchools = await School.find({ status: 'active' }).select('_id name aiNumber twilioPhoneNumber').lean();
+                // Get all schools (regardless of status for now to ensure matching)
+                const allSchools = await School.find({}).select('_id name aiNumber twilioPhoneNumber status').lean();
                 
                 const matchedSchool = allSchools.find(s => {
                     const schoolAiNumber = normalizePhone(s.aiNumber || '');
                     const schoolTwilioNumber = normalizePhone(s.twilioPhoneNumber || '');
-                    const matches = schoolAiNumber === normalizedPhone || schoolTwilioNumber === normalizedPhone;
+                    const matches = schoolAiNumber === normalizedCalled || schoolTwilioNumber === normalizedCalled;
                     
                     if (matches) {
-                        console.log(`[Webhook] Phone match found: ${normalizedPhone} matches school "${s.name}" (ID: ${s._id})`);
-                        console.log(`[Webhook] School AI Number: ${s.aiNumber || 'N/A'}, Twilio Number: ${s.twilioPhoneNumber || 'N/A'}`);
+                        console.log(`[Webhook] Match found: ${normalizedCalled} matches school "${s.name}" (ID: ${s._id}, Status: ${s.status})`);
                     }
                     
                     return matches;
                 });
                 
                 if (matchedSchool) {
-                    console.log(`[Webhook] Found school by phone number: ${matchedSchool.name} (${matchedSchool._id})`);
+                    console.log(`[Webhook] Found school by phone number matching: ${matchedSchool.name} (${matchedSchool._id})`);
                     return matchedSchool._id;
                 }
             }
@@ -404,8 +404,10 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         const parentInfo = await extractParentInfo(webhook.transcript || []);
         console.log('[Webhook Booking] Extracted parent info:', parentInfo);
 
-        // Use phone from webhook if parent info doesn't have it
-        const phone = parentInfo.phone || webhook.user_id || '';
+        // Parent's phone is 'from_number' for inbound calls
+        const phoneCall = webhook.metadata?.phone_call || {};
+        const callerPhone = phoneCall.from_number || '';
+        const phone = parentInfo.phone || callerPhone || '';
         const parentName = parentInfo.parentName || 'Parent';
 
         // Get tour booking date
