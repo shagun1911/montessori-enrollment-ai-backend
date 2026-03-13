@@ -529,14 +529,14 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         console.log(`[Webhook Email] School user email: "${schoolUser?.email || 'Not set'}"`);
         console.log(`[Webhook Email] School adminEmail: "${school?.adminEmail || 'Not set'}"`);
         
-        // Determine admin email: prefer user email, fallback to school adminEmail
+        // Determine admin email: prefer school adminEmail (set in settings), fallback to school user login email
         let adminEmail = null;
-        if (schoolUser && schoolUser.email && schoolUser.email.trim()) {
-            adminEmail = schoolUser.email.trim();
-            console.log(`[Webhook Email] Using school user email: ${adminEmail}`);
-        } else if (school.adminEmail && school.adminEmail.trim()) {
+        if (school.adminEmail && school.adminEmail.trim()) {
             adminEmail = school.adminEmail.trim();
-            console.log(`[Webhook Email] Using school adminEmail field: ${adminEmail}`);
+            console.log(`[Webhook Email] Using school adminEmail: ${adminEmail}`);
+        } else if (schoolUser && schoolUser.email && schoolUser.email.trim()) {
+            adminEmail = schoolUser.email.trim();
+            console.log(`[Webhook Email] Falling back to school user email: ${adminEmail}`);
         }
         
         if (!adminEmail) {
