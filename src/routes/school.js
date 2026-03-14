@@ -197,174 +197,159 @@ router.get('/dashboard', async (req, res) => {
         const school = await School.findById(schoolId).select('aiNumber adminEmail').lean();
         const toursBooked = await TourBooking.countDocuments({ schoolId });
 
-        // Get admin email notifications (emails sent to admin after inbound calls)
+        // Get admin email notifications scoped to this school
         let adminEmailNotifications = [];
-        if (school && school.adminEmail) {
-            const Followup = require('../models/Followup');
-            const adminEmails = await Followup.find({
-                schoolId,
-                type: 'Email',
-                recipient: school.adminEmail.trim(),
-                leadName: 'Admin Notification'
-            })
-                .sort({ createdAt: -1 })
-                .limit(20)
-                .lean();
-            
-            adminEmailNotifications = adminEmails.map(email => ({
-                id: email._id.toString(),
-                recipient: email.recipient,
-                status: email.status,
-                subject: email.message?.split('\n')[0] || 'New Call Received',
-                sentAt: email.createdAt || email.updatedAt,
-                conversationId: email.message?.match(/Conversation ID: ([^\n]+)/)?.[1] || null,
-                callerNumber: email.message?.match(/Caller Number: ([^\n]+)/)?.[1] || null,
-            }));
-        }
-
-        // Get webhook data (transcription webhooks with summaries)
-        const webhooks = await ElevenLabsWebhook.find({
-            type: 'post_call_transcription',
-            ai_processed: true
-        })
-            .sort({ received_at: -1 })
-            .limit(50)
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const adminEmailQuery = {
+            schoolId: schoolObjectId,
+            type: 'Email',
+            leadName: 'Admin Notification'
+        };
+        
+        const adminEmails = await Followup.find(adminEmailQuery)
+            .sort({ createdAt: -1 })
+            .limit(20)
             .lean();
+        
+        adminEmailNotifications = adminEmails.map(email => ({
+            id: email._id.toString(),
+            recipient: email.recipient,
+            status: email.status,
+            subject: email.message?.split('\n')[0] || 'New Call Received',
+            sentAt: email.createdAt || email.updatedAt,
+            conversationId: email.message?.match(/Conversation ID: ([^\n\s]+)/)?.[1] || null,
+            callerNumber: email.message?.match(/(?:Caller Name\/Number|Caller Number): ([^\n]+)/)?.[1] || null,
+        }));
 
-        // Normalize phone number helper
-        function normalizePhone(phone) {
+        // Helper to consistently normalize phones for matching
+        const normalizePhone = (phone) => {
             if (!phone) return '';
             return phone.replace(/\D/g, '');
-        }
+        };
 
-        // Get school's AI number for matching
-        const schoolAiNumber = school?.aiNumber ? normalizePhone(school.aiNumber) : '';
-
-        let calls = [];
-        if (school && school.aiNumber) {
-            const digits = school.aiNumber.replace(/\D/g, '');
-            const normalizedNumber = digits ? `+${digits}` : '';
-            const participantId = `sip_${normalizedNumber}`;
-
-            const bennyDb = mongoose.connection.useDb('benny');
-            const collection = bennyDb.collection('voiceAI');
-
-            // Get all logs for this school's AI number
-            const rawLogs = await collection.find({ participant_id: participantId })
-                .sort({ created_at: -1 })
-                .toArray();
-
-            // Map to a consistent format
-            calls = rawLogs.map(log => ({
-                id: log._id.toString(),
-                callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
-                callerName: 'Parent', // Generic since it's not in voiceAI DB
-                duration: log.duration_seconds || 0,
-                timestamp: log.created_at || log.timestamp || new Date(),
-                recordingUrl: log.recording_url || null,
-                callType: 'inquiry'
-            }));
-        }
-
-        // Also include webhook calls that might not be in voiceAI DB
-        // Match webhooks by phone number or include all if we can't match
-        const webhookCalls = webhooks
-            .filter(wh => {
-                // Try to match by phone number if available
-                const webhookPhone = normalizePhone(wh.user_id || '');
-                // Include if phone matches school AI number pattern or if we can't determine
-                return !webhookPhone || webhookPhone.includes(schoolAiNumber) || schoolAiNumber === '';
-            })
-            .map(wh => {
-                const callTimestamp = wh.metadata?.start_time_unix_secs 
-                    ? new Date(wh.metadata.start_time_unix_secs * 1000)
-                    : wh.received_at;
-                
-                const duration = wh.metadata?.phone_call?.call_duration_secs || 0;
-                
-                return {
-                    id: wh._id.toString(),
-                    conversationId: wh.conversation_id,
-                    callerPhone: wh.user_id || 'Unknown',
-                    callerName: 'Parent',
-                    duration: duration,
-                    timestamp: callTimestamp,
-                    recordingUrl: null, // Audio is stored as base64, not URL
-                    callType: 'inquiry',
-                    summary: wh.summary || '',
-                    tourBookingDetected: wh.tour_booking_detected || false,
-                    tourBookingDate: wh.tour_booking_date || null,
-                    aiProcessed: wh.ai_processed || false
-                };
-            });
-
-        // Merge calls and webhook calls, deduplicate by timestamp/phone
-        const allCallsMap = new Map();
+        const schoolAiNumber = normalizePhone(school?.aiNumber || '');
+        const userToken = req.headers.authorization?.split(' ')[1] || '';
+        const backendUrl = `${req.protocol}://${req.get('host')}`;
         
-        // Add voiceAI calls
-        calls.forEach(call => {
-            const key = `${normalizePhone(call.callerPhone)}_${new Date(call.timestamp).getTime()}`;
-            if (!allCallsMap.has(key)) {
-                allCallsMap.set(key, {
-                    ...call,
+        // ── STEP 1: Fetch VoiceAI Logs (SIP) ──────────
+        let voiceAiCalls = [];
+        if (schoolAiNumber) {
+            try {
+                const digits = schoolAiNumber;
+                const normalizedNumber = `+${digits}`;
+                const participantId = `sip_${normalizedNumber}`;
+
+                const bennyDb = mongoose.connection.useDb('benny');
+                const collection = bennyDb.collection('voiceAI');
+
+                const rawLogs = await collection.find({ participant_id: participantId })
+                    .sort({ created_at: -1 })
+                    .toArray();
+
+                voiceAiCalls = rawLogs.map(log => ({
+                    id: log._id.toString(),
+                    callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
+                    callerName: 'Parent',
+                    duration: log.duration_seconds || 0,
+                    timestamp: log.created_at || log.timestamp || new Date(),
+                    recordingUrl: log.recording_url || null,
+                    callType: 'inquiry',
                     summary: '',
                     tourBookingDetected: false,
                     tourBookingDate: null,
                     aiProcessed: false
-                });
+                }));
+            } catch (err) {
+                console.error('[Dashboard] VoiceAI fetch error:', err);
             }
+        }
+
+        // ── STEP 2: Fetch Scoped Webhooks ──────────
+        // Search by both discrete schoolId (best) and unique AI number (resilient fallback)
+        const schoolWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            ai_processed: true,
+            $or: [
+                { schoolId: schoolObjectId },
+                { 
+                    'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' },
+                },
+                {
+                    'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
+                }
+            ]
+        }).sort({ received_at: -1 }).limit(100).lean();
+
+        const webhookCalls = schoolWebhooks.map(wh => {
+            const callTimestamp = wh.metadata?.start_time_unix_secs 
+                ? new Date(wh.metadata.start_time_unix_secs * 1000) 
+                : wh.received_at;
+            
+            return {
+                id: wh._id.toString(),
+                conversationId: wh.conversation_id,
+                callerPhone: wh.metadata?.phone_call?.from_number 
+                    || wh.tour_booking_extracted?.phone 
+                    || wh.user_id 
+                    || 'Web Widget',
+                callerName: wh.tour_booking_extracted?.name || 'Parent',
+                duration: wh.metadata?.call_duration_secs || wh.metadata?.phone_call?.call_duration_secs || 0,
+                timestamp: callTimestamp,
+                recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
+                callType: 'inquiry',
+                summary: wh.summary || '',
+                tourBookingDetected: wh.tour_booking_detected || false,
+                tourBookingDate: wh.tour_booking_date || null,
+                aiProcessed: wh.ai_processed || false
+            };
         });
 
-        // Add/update with webhook calls (they have summaries)
-        webhookCalls.forEach(call => {
-            const key = `${normalizePhone(call.callerPhone)}_${new Date(call.timestamp).getTime()}`;
+        // ── STEP 3: Merge and Deduplicate ──────────
+        const allCallsMap = new Map();
+        
+        // Add VoiceAI base (usually more reliable for duration/SIP)
+        voiceAiCalls.forEach(c => {
+            const key = `${normalizePhone(c.callerPhone)}_${new Date(c.timestamp).getTime()}`;
+            allCallsMap.set(key, c);
+        });
+
+        // Add/Enrich with Webhooks (they have summaries & tour flags)
+        webhookCalls.forEach(whc => {
+            const key = `${normalizePhone(whc.callerPhone)}_${new Date(whc.timestamp).getTime()}`;
             if (allCallsMap.has(key)) {
-                // Update existing call with webhook data
                 const existing = allCallsMap.get(key);
-                allCallsMap.set(key, {
-                    ...existing,
-                    summary: call.summary,
-                    tourBookingDetected: call.tourBookingDetected,
-                    tourBookingDate: call.tourBookingDate,
-                    aiProcessed: call.aiProcessed,
-                    conversationId: call.conversationId
-                });
+                allCallsMap.set(key, { ...existing, ...whc, id: existing.id });
             } else {
-                // Add new webhook call
-                allCallsMap.set(key, call);
+                allCallsMap.set(key, whc);
             }
         });
 
-        // Convert back to array and sort by timestamp
-        calls = Array.from(allCallsMap.values()).sort((a, b) => 
-            new Date(b.timestamp) - new Date(a.timestamp)
+        const calls = Array.from(allCallsMap.values()).sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
         const totalCalls = calls.length;
         const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
         const callMinutes = Math.floor(totalDurationSeconds / 60);
 
-        // Generate chart data for the last 14 days
+        // Chart Data (14 days)
         const chartData = [];
-        const today = new Date();
+        const todayAtMidnight = new Date();
+        todayAtMidnight.setHours(0, 0, 0, 0);
 
         for (let i = 13; i >= 0; i--) {
-            const date = new Date(today);
-            date.setDate(date.getDate() - i);
-            const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-            const dayStart = new Date(date);
-            dayStart.setHours(0, 0, 0, 0);
-            const dayEnd = new Date(date);
-            dayEnd.setHours(23, 59, 59, 999);
+            const day = new Date(todayAtMidnight);
+            day.setDate(day.getDate() - i);
+            const nextDay = new Date(day);
+            nextDay.setDate(day.getDate() + 1);
 
             const dayCalls = calls.filter(c => {
-                const cDate = new Date(c.timestamp);
-                return cDate >= dayStart && cDate <= dayEnd;
+                const t = new Date(c.timestamp);
+                return t >= day && t < nextDay;
             });
 
             chartData.push({
-                name: dateStr,
+                name: day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
                 calls: dayCalls.length
             });
         }
@@ -401,88 +386,207 @@ router.get('/dashboard', async (req, res) => {
 });
 
 // GET /api/school/call-logs - Fetch detailed call logs from voiceAI collection in benny DB
+// GET /api/school/call-logs - Fetch detailed call logs from both VoiceAI and ElevenLabs
 router.get('/call-logs', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
-        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const school = await School.findById(schoolId).select('aiNumber elevenlabsAgentId').lean();
 
-        if (!school || !school.aiNumber) {
-            return res.json([]);
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
         }
 
-        // Normalize school AI number (digits and leading + only)
-        const digits = school.aiNumber.replace(/\D/g, '');
-        const normalizedNumber = digits ? `+${digits}` : '';
-        const participantId = `sip_${normalizedNumber}`;
+        const userToken = req.headers.authorization?.split(' ')[1] || '';
+        const backendUrl = `${req.protocol}://${req.get('host')}`;
+        
+        // Helper to normalize phones
+        const normalizePhone = (phone) => {
+            if (!phone) return '';
+            return phone.replace(/\D/g, '');
+        };
+        const schoolAiNumber = normalizePhone(school.aiNumber || '');
 
-        const bennyDb = mongoose.connection.useDb('benny');
-        const collection = bennyDb.collection('voiceAI');
+        // ── 1. Fetch SIP Logs (VoiceAI) ──
+        let voiceAiSessions = [];
+        if (schoolAiNumber) {
+            try {
+                const digits = schoolAiNumber;
+                const normalizedNumber = `+${digits}`;
+                const participantId = `sip_${normalizedNumber}`;
 
-        // 1. Find sessions associated with this participant
-        const schoolLogs = await collection.find({ participant_id: participantId })
-            .project({ session_id: 1 })
-            .toArray();
+                const bennyDb = mongoose.connection.useDb('benny');
+                const collection = bennyDb.collection('voiceAI');
 
-        const sessionIds = [...new Set(schoolLogs.map(l => l.session_id))];
+                const schoolLogs = await collection.find({ participant_id: participantId }).project({ session_id: 1 }).toArray();
+                const sessionIds = [...new Set(schoolLogs.map(l => l.session_id))];
 
-        if (sessionIds.length === 0) {
-            return res.json([]);
-        }
-
-        // 2. Fetch ALL logs for these sessions to get the complete transcript (all participants)
-        const allLogs = await collection.find({ session_id: { $in: sessionIds } })
-            .sort({ created_at: -1 })
-            .toArray();
-
-        // 3. Group by session to merge transcripts
-        const sessionsMap = {};
-        allLogs.forEach(log => {
-            const sid = log.session_id;
-            if (!sessionsMap[sid]) {
-                sessionsMap[sid] = {
-                    id: log._id.toString(),
-                    sessionId: sid,
-                    participantId: log.participant_id, // Primary participant
-                    transcript: [],
-                    summary: log.transcript_summary || '',
-                    recordingUrl: log.recording_url,
-                    duration: log.duration_seconds || 0,
-                    createdAt: log.created_at || log.timestamp
-                };
-            }
-
-            // Add transcript items
-            if (Array.isArray(log.transcript)) {
-                log.transcript.forEach(t => {
-                    sessionsMap[sid].transcript.push({
-                        role: t.role || 'unknown',
-                        text: t.content || t.text || t.message || (typeof t === 'string' ? t : ''),
-                        timestamp: t.timestamp || log.created_at
+                if (sessionIds.length > 0) {
+                    const allLogs = await collection.find({ session_id: { $in: sessionIds } }).sort({ created_at: -1 }).toArray();
+                    const sessionsMap = {};
+                    allLogs.forEach(log => {
+                        const sid = log.session_id;
+                        if (!sessionsMap[sid]) {
+                            sessionsMap[sid] = {
+                                id: log._id.toString(),
+                                sessionId: sid,
+                                participantId: log.participant_id?.replace('sip_', '') || 'Unknown',
+                                transcript: [],
+                                summary: log.transcript_summary || '',
+                                recordingUrl: log.recording_url,
+                                duration: log.duration_seconds || 0,
+                                createdAt: log.created_at || log.timestamp
+                            };
+                        }
+                        if (Array.isArray(log.transcript)) {
+                            log.transcript.forEach(t => {
+                                sessionsMap[sid].transcript.push({
+                                    role: t.role || 'unknown',
+                                    text: t.content || t.text || t.message || (typeof t === 'string' ? t : ''),
+                                    timestamp: t.timestamp || log.created_at
+                                });
+                            });
+                        }
+                        if (log.recording_url && !sessionsMap[sid].recordingUrl) sessionsMap[sid].recordingUrl = log.recording_url;
                     });
-                });
+                    voiceAiSessions = Object.values(sessionsMap);
+                }
+            } catch (err) {
+                console.error('[CallLogs] VoiceAI error:', err);
             }
+        }
 
-            // Prefer summary if found in any leg
-            if (log.transcript_summary && !sessionsMap[sid].summary) {
-                sessionsMap[sid].summary = log.transcript_summary;
-            }
-            // Prefer recording URL if found
-            if (log.recording_url && !sessionsMap[sid].recordingUrl) {
-                sessionsMap[sid].recordingUrl = log.recording_url;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        // ── 2. Fetch AI Logs (ElevenLabs Webhooks) ──
+        const webhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            ai_processed: true,
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        }).sort({ received_at: -1 }).limit(50).lean();
+
+        const webhookSessions = webhooks.map(wh => {
+            const transcript = Array.isArray(wh.transcript) ? wh.transcript.map(t => ({
+                role: t.role === 'agent' ? 'Assistant' : 'Parent',
+                text: t.message || t.text || '',
+                timestamp: t.time_in_call_secs ? new Date(wh.received_at.getTime() + t.time_in_call_secs * 1000) : wh.received_at
+            })) : [];
+
+            return {
+                id: wh._id.toString(),
+                sessionId: wh.conversation_id,
+                participantId: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Web Widget',
+                transcript,
+                summary: wh.summary || '',
+                recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
+                duration: wh.metadata?.call_duration_secs || wh.metadata?.phone_call?.call_duration_secs || 0,
+                createdAt: wh.received_at
+            };
+        });
+
+        // ── 3. Merge and Deduplicate ──
+        const finalSessionsMap = new Map();
+        voiceAiSessions.forEach(s => {
+            const key = `${normalizePhone(s.participantId)}_${new Date(s.createdAt).getTime()}`;
+            finalSessionsMap.set(key, s);
+        });
+
+        webhookSessions.forEach(ws => {
+            const key = `${normalizePhone(ws.participantId)}_${new Date(ws.createdAt).getTime()}`;
+            if (finalSessionsMap.has(key)) {
+                const existing = finalSessionsMap.get(key);
+                // Merge transcript and recording if webhook has better data
+                finalSessionsMap.set(key, {
+                    ...existing,
+                    ...ws,
+                    transcript: ws.transcript.length > existing.transcript.length ? ws.transcript : existing.transcript,
+                    id: existing.id // Keep original ID for stability
+                });
+            } else {
+                finalSessionsMap.set(key, ws);
             }
         });
 
-        const formattedLogs = Object.values(sessionsMap).map(session => {
-            // Sort transcript items by timestamp
-            session.transcript.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            // Filter out empty messages
-            session.transcript = session.transcript.filter(t => t.text);
-            return session;
-        }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const sortedLogs = Array.from(finalSessionsMap.values())
+            .map(session => {
+                session.transcript.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                session.transcript = session.transcript.filter(t => t.text);
+                return session;
+            })
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-        res.json(formattedLogs);
+        res.json(sortedLogs);
     } catch (err) {
         console.error('Call logs error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/school/calls/:conversationId/audio - Serve the recorded audio for a conversation
+router.get('/calls/:conversationId/audio', async (req, res) => {
+    try {
+        const { conversationId } = req.params;
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
+        // ── Strategy 1: Check Local Cache (Webhook base64) ────────────────
+        const audioWebhook = await ElevenLabsWebhook.findOne({
+            conversation_id: conversationId,
+            type: 'post_call_audio',
+            $or: [{ schoolId: schoolObjectId }, { schoolId: { $exists: false } }]
+        }).select('audio_base64 metadata agent_id').lean();
+
+        if (audioWebhook && audioWebhook.audio_base64) {
+            const school = await School.findById(schoolId).select('aiNumber elevenlabsAgentId').lean();
+            const normalizedSchoolNum = school.aiNumber ? school.aiNumber.replace(/\D/g, '') : '';
+            const whToNum = audioWebhook.metadata?.phone_call?.to_number ? audioWebhook.metadata.phone_call.to_number.replace(/\D/g, '') : '';
+            
+            if (audioWebhook.schoolId 
+                || (normalizedSchoolNum && whToNum.includes(normalizedSchoolNum)) 
+                || (school.elevenlabsAgentId && audioWebhook.agent_id === school.elevenlabsAgentId)) {
+                console.log(`[Audio] Serving from cache: ${conversationId}`);
+                const audioBuffer = Buffer.from(audioWebhook.audio_base64, 'base64');
+                res.set('Content-Type', 'audio/mpeg');
+                return res.send(audioBuffer);
+            }
+        }
+
+        // ── Strategy 2: Mock/Test Fallback ────────────────
+        if (conversationId.startsWith('test_conv_')) {
+            console.log(`[Audio] Serving mock silence for test ID: ${conversationId}`);
+            // 1 second of silence (tiny valid MP3)
+            const silentMp3 = Buffer.from('SUQzBAAAAAABAFRYWFgAAAASAAADbWFqb3JfYnJhbmQAZGFzaABUWFhYAAAAEQAAAD1taW5vcl92ZXJzaW9uADBUWFhYAAAAHAAAAHByZWRvbWluYW50X2JyYW5kAGlzbzZtcDQxAFRTU0UAAAAPAAADTGF2ZjYwLjMuMTAwAAAAAAAAAAAAAAD/80MUAAAAAAAAAAAAAAAAAAAAAABYaW5nAAAADwAAABIAABm6AAAAAAAAAAAAAAAAAAAAAP/zQxQEAAB8AAAAAA', 'base64');
+            res.set('Content-Type', 'audio/mpeg');
+            return res.send(silentMp3);
+        }
+
+        // ── Strategy 3: Fetch Directly from ElevenLabs API (Proxy) ────────
+        const baseUrl = process.env.ELEVENLABS_API_URL;
+        if (baseUrl) {
+            try {
+                console.log(`[Audio Proxy] Requesting: ${conversationId}`);
+                const response = await axios.get(`${baseUrl}/api/v1/conversations/${conversationId}/audio`, {
+                    responseType: 'arraybuffer',
+                    timeout: 10000
+                });
+
+                if (response.status === 200) {
+                    console.log(`[Audio Proxy] Success for: ${conversationId}`);
+                    res.set('Content-Type', 'audio/mpeg');
+                    return res.send(response.data);
+                }
+            } catch (proxyErr) {
+                console.warn(`[Audio Proxy] Failed for ${conversationId}: ${proxyErr.response?.status || proxyErr.message}`);
+                // If it's 404 and we're in dev/test, we could return silence too, 
+                // but let's only do it for test_conv_ prefix for now.
+            }
+        }
+
+        return res.status(404).json({ error: 'Audio recording not found' });
+    } catch (err) {
+        console.error('[Audio Error]:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

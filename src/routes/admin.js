@@ -110,6 +110,7 @@ router.get('/schools', async (req, res) => {
                     name: s.name,
                     aiNumber: s.aiNumber,
                     routingNumber: s.routingNumber,
+                    elevenlabsAgentId: s.elevenlabsAgentId,
                     status: s.status,
                     language: s.language,
                     calls,
@@ -132,7 +133,7 @@ router.get('/schools', async (req, res) => {
 // POST /api/admin/schools - Create a new school + user credentials. Optional referralCode links to referrer.
 router.post('/schools', async (req, res) => {
     try {
-        const { name, email, password, aiNumber, routingNumber, referralCode, referrerSchoolId } = req.body;
+        const { name, email, password, aiNumber, routingNumber, elevenlabsAgentId, referralCode, referrerSchoolId } = req.body;
 
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'Name, email, and password are required' });
@@ -147,6 +148,7 @@ router.post('/schools', async (req, res) => {
             name,
             aiNumber: aiNumber || '',
             routingNumber: routingNumber || '',
+            elevenlabsAgentId: elevenlabsAgentId || '',
             status: 'active',
         });
 
@@ -213,6 +215,7 @@ router.post('/schools', async (req, res) => {
                 email,
                 aiNumber: aiNumber || '',
                 routingNumber: routingNumber || '',
+                elevenlabsAgentId: elevenlabsAgentId || '',
             },
         });
     } catch (err) {
@@ -225,7 +228,7 @@ router.post('/schools', async (req, res) => {
 router.put('/schools/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, aiNumber, routingNumber, status } = req.body;
+        const { name, aiNumber, routingNumber, elevenlabsAgentId, status } = req.body;
 
         const school = await School.findById(id);
         if (!school) {
@@ -235,6 +238,7 @@ router.put('/schools/:id', async (req, res) => {
         if (name !== undefined) school.name = name;
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
+        if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (status !== undefined) school.status = status;
 
         await school.save();

@@ -7,6 +7,8 @@ const TourBooking = require('../models/TourBooking');
 const Followup = require('../models/Followup');
 const { processTranscript } = require('../services/openaiService');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
 
 const router = express.Router();
 
@@ -60,6 +62,10 @@ async function processWebhookAsync(payload) {
         const status = data.status || '';
         const metadata = data.metadata || {};
 
+        // Find associated school first to link the record
+        const schoolIdString = await findSchoolForWebhook(data);
+        const schoolId = schoolIdString ? new mongoose.Types.ObjectId(schoolIdString) : null;
+
         // Prepare webhook document based on type
         let webhookDoc = {
             type: type,
@@ -71,7 +77,8 @@ async function processWebhookAsync(payload) {
             metadata: metadata,
             raw_payload: payload, // Store full payload for debugging
             processed: false,
-            received_at: new Date()
+            received_at: new Date(),
+            schoolId: schoolId
         };
 
         // Handle different webhook types
@@ -308,22 +315,50 @@ async function findSchoolForWebhook(webhook) {
     try {
         // ── Strategy 1: Phone-call match by called number ──────────────────
         const phoneCall = webhook.metadata?.phone_call || {};
-        const calledNumber = phoneCall.to_number || phoneCall.external_number || '';
-
+        // INBOUND: agent_number is our AI number, external_number is the parent
+        // OUTBOUND: external_number is the destination
+        const calledNumber = phoneCall.agent_number || phoneCall.to_number || '';
+        
         if (calledNumber) {
             const normalizedCalled = normalizePhone(calledNumber);
             if (normalizedCalled) {
-                console.log(`[Webhook] Strategy 1 – searching by called number: ${normalizedCalled}`);
+                console.log(`[Webhook] Strategy 1 – searching by school's AI number: ${normalizedCalled}`);
 
-                const allSchools = await School.find({}).select('_id name aiNumber status').lean();
-                const matchedSchool = allSchools.find(s => {
+                const allSchools = await School.find({}).select('_id name aiNumber elevenlabsAgentId status').lean();
+                const matchedSchools = allSchools.filter(s => {
                     const schoolAiNumber = normalizePhone(s.aiNumber || '');
                     return schoolAiNumber === normalizedCalled;
                 });
 
-                if (matchedSchool) {
-                    console.log(`[Webhook] Found school by aiNumber: "${matchedSchool.name}" (${matchedSchool._id}, status: ${matchedSchool.status})`);
-                    return matchedSchool._id;
+                if (matchedSchools.length === 1) {
+                    console.log(`[Webhook] Found single school by aiNumber: "${matchedSchools[0].name}" (${matchedSchools[0]._id}, status: ${matchedSchools[0].status})`);
+                    return matchedSchools[0]._id;
+                } else if (matchedSchools.length > 1) {
+                    console.log(`[Webhook] Multiple schools match aiNumber ${normalizedCalled}. Attempting to disambiguate...`);
+                    
+                    // Disambiguate by agentId
+                    const agentId = webhook.agent_id || '';
+                    if (agentId) {
+                        const byAgentId = matchedSchools.find(s => s.elevenlabsAgentId === agentId);
+                        if (byAgentId) {
+                            console.log(`[Webhook] Disambiguated by elevenlabsAgentId: "${byAgentId.name}"`);
+                            return byAgentId._id;
+                        }
+                    }
+
+                    // Disambiguate by school_id in metadata (useful if passing via React SDK)
+                    const webhookSchoolId = webhook.metadata?.school_id || webhook.metadata?.schoolId;
+                    if (webhookSchoolId) {
+                        const bySchoolId = matchedSchools.find(s => s._id.toString() === webhookSchoolId);
+                        if (bySchoolId) {
+                            console.log(`[Webhook] Disambiguated by custom metadata school_id: "${bySchoolId.name}"`);
+                            return bySchoolId._id;
+                        }
+                    }
+
+                    // Fallback to first if no disambiguation matches
+                    console.log(`[Webhook] Could not definitively disambiguate. Defaulting to first match: "${matchedSchools[0].name}"`);
+                    return matchedSchools[0]._id;
                 }
 
                 console.warn(`[Webhook] No school matched called number: ${normalizedCalled}`);
@@ -335,13 +370,28 @@ async function findSchoolForWebhook(webhook) {
         if (agentId) {
             console.log(`[Webhook] Strategy 2 – searching by elevenlabsAgentId: ${agentId}`);
 
-            const matchedSchool = await School.findOne({ elevenlabsAgentId: agentId })
+            const matchedSchools = await School.find({ elevenlabsAgentId: agentId })
                 .select('_id name status')
                 .lean();
 
-            if (matchedSchool) {
-                console.log(`[Webhook] Found school by elevenlabsAgentId: "${matchedSchool.name}" (${matchedSchool._id}, status: ${matchedSchool.status})`);
-                return matchedSchool._id;
+            if (matchedSchools.length === 1) {
+                console.log(`[Webhook] Found single school by elevenlabsAgentId: "${matchedSchools[0].name}" (${matchedSchools[0]._id}, status: ${matchedSchools[0].status})`);
+                return matchedSchools[0]._id;
+            } else if (matchedSchools.length > 1) {
+                console.log(`[Webhook] Multiple schools match elevenlabsAgentId ${agentId}. Attempting to disambiguate...`);
+                
+                // Disambiguate by school_id in metadata (useful if passing via React SDK)
+                const webhookSchoolId = webhook.metadata?.school_id || webhook.metadata?.schoolId;
+                if (webhookSchoolId) {
+                    const bySchoolId = matchedSchools.find(s => s._id.toString() === webhookSchoolId);
+                    if (bySchoolId) {
+                        console.log(`[Webhook] Disambiguated by custom metadata school_id: "${bySchoolId.name}"`);
+                        return bySchoolId._id;
+                    }
+                }
+
+                console.log(`[Webhook] Could not definitively disambiguate. Defaulting to first match: "${matchedSchools[0].name}"`);
+                return matchedSchools[0]._id;
             }
 
             console.warn(`[Webhook] No school has elevenlabsAgentId = "${agentId}"`);
@@ -578,12 +628,12 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         const callDuration = webhook.metadata?.phone_call?.call_duration_secs || 0;
         const callDurationMin = Math.floor(callDuration / 60);
         const callDurationSec = callDuration % 60;
-        const callerNumber = webhook.user_id || webhook.metadata?.phone_call?.external_number || 'Unknown';
-        const conversationId = webhook.conversation_id || 'N/A';
-        const receivedAt = webhook.received_at ? new Date(webhook.received_at).toLocaleString() : new Date().toLocaleString();
+        let callerNumber = webhook.metadata?.phone_call?.from_number 
+            || webhook.metadata?.phone_call?.external_number 
+            || aiResult?.tour_booking_extracted?.phone 
+            || 'Unknown (Web Widget)';
 
-        // Count transcript entries
-        const transcriptCount = Array.isArray(webhook.transcript) ? webhook.transcript.length : 0;
+        const receivedAt = webhook.received_at ? new Date(webhook.received_at).toLocaleString() : new Date().toLocaleString();
 
         // Include AI processing results if available
         const summary = webhook.summary || aiResult?.summary || '';
@@ -591,17 +641,24 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         const tourDate = webhook.tour_booking_date || aiResult?.tour_booking_date || null;
         const tourNotes = webhook.tour_booking_extracted?.notes || aiResult?.tour_booking_extracted?.notes || '';
 
+        const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
+        const notificationToken = jwt.sign(
+            { id: 'system', role: 'school', schoolId: schoolObjectId },
+            JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+
         const emailSubject = `New Call Received - ${school.name}${tourBooked ? ' (Tour Booked)' : ''}`;
         let emailBody = `Hello,
 
 A new call has been received and processed for ${school.name}.
 
 Call Details:
-- Conversation ID: ${conversationId}
-- Caller Number: ${callerNumber}
+- Caller Name/Number: ${callerNumber}
 - Call Duration: ${callDurationMin}m ${callDurationSec}s
-- Transcript Entries: ${transcriptCount}
 - Received At: ${receivedAt}
+- Conversation ID: ${webhook.conversation_id}
+- Call Recording: ${backendUrl}/api/school/calls/${webhook.conversation_id}/audio?token=${notificationToken}
 
 `;
 

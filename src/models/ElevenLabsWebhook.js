@@ -19,6 +19,7 @@ const elevenLabsWebhookSchema = new mongoose.Schema({
     tour_booking_date: { type: Date, default: null }, // extracted tour booking date/time
     tour_booking_extracted: { type: mongoose.Schema.Types.Mixed, default: null }, // full extracted booking info
     ai_processed: { type: Boolean, default: false }, // whether AI processing is complete
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true }, // link to the school
 }, { timestamps: true });
 
 // Index for faster lookups
