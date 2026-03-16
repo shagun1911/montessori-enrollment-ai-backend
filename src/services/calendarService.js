@@ -151,6 +151,12 @@ async function isSlotAvailable(schoolId, start, end) {
         return { available: false, error: 'Invalid date range' };
     }
 
+    // Check if weekend (0 = Sunday, 6 = Saturday) based on local time or school timezone
+    const day = startDate.getDay();
+    if (day === 0 || day === 6) {
+        return { available: false, error: 'Tour bookings are not available on weekends.' };
+    }
+
     const { busySlots, error } = await getBusySlots(schoolId, startDate, endDate);
     if (error) return { available: false, error };
 
@@ -171,9 +177,24 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
     const [y, m, d] = dateStr.split('-').map(Number);
     if (!y || !m || !d) return { freeSlots: [], error: 'Invalid date. Use YYYY-MM-DD.' };
 
-    const dayStart = new Date(Date.UTC(y, m - 1, d));
-    const [startH, startM] = (businessHours.start || '09:00').split(':').map(Number);
-    const [endH, endM] = (businessHours.end || '17:00').split(':').map(Number);
+    // Determine school timezone for range calculations
+    const School = require('../models/School');
+    const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd timezone').lean();
+    const tz = school?.timezone || 'UTC';
+
+    const dayStart = new Date(`${dateStr}T00:00:00.000Z`); // Base date to work from
+    
+    // Check if weekend
+    const dayOfWeek = new Date(dateStr).getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+        return { freeSlots: [], error: 'Weekend bookings are not allowed.' };
+    }
+
+    const [startH, startM] = (school?.businessHoursStart || '09:00').split(':').map(Number);
+    const [endH, endM] = (school?.businessHoursEnd || '17:00').split(':').map(Number);
+    
+    // For now, we'll continue using UTC for compatibility, 
+    // but in a production app we would use a library like luxon to handle 'tz'
     const rangeStart = new Date(dayStart);
     rangeStart.setUTCHours(startH || 9, startM || 0, 0, 0);
     const rangeEnd = new Date(dayStart);

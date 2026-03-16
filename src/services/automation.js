@@ -143,4 +143,84 @@ async function triggerAutomation(schoolId, leadData) {
     return result;
 }
 
-module.exports = { triggerAutomation };
+async function sendTourConfirmation(schoolId, tourBooking) {
+    try {
+        const school = await School.findById(schoolId);
+        if (!school) return;
+
+        const { parentName, phone, email, scheduledAt } = tourBooking;
+        const tourDateStr = new Date(scheduledAt).toLocaleString('en-US', {
+            dateStyle: 'full',
+            timeStyle: 'short',
+            timeZone: school.timezone || 'UTC'
+        });
+
+        // 1. Send Confirmation Email
+        if (email) {
+            const transport = getEmailTransport();
+            if (transport) {
+                const emailBody = (school.tourConfirmationEmailTemplate || '')
+                    .replace(/\{parent_name\}/g, parentName || 'Parent')
+                    .replace(/\{school_name\}/g, school.name)
+                    .replace(/\{tour_date\}/g, tourDateStr)
+                    .replace(/\{school_address\}/g, school.address || 'our campus');
+
+                const from = process.env.MAIL_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@enrollmentai.com';
+                
+                try {
+                    await transport.sendMail({
+                        from,
+                        to: email,
+                        subject: `Tour Confirmation: ${school.name}`,
+                        text: emailBody,
+                    });
+                    
+                    await Followup.create({
+                        schoolId,
+                        leadName: parentName || 'Unknown',
+                        type: 'Email',
+                        status: 'sent',
+                        message: emailBody,
+                        recipient: email,
+                    });
+                } catch (err) {
+                    console.error('[Tour Confirmation Email] Error:', err.message);
+                }
+            }
+        }
+
+        // 2. Send SMS Confirmation (Optional/Immediate)
+        if (phone && school.smsAutoFollowup && school.twilioSid && school.twilioPhoneNumber) {
+            const smsBody = (school.tourReminderSmsTemplate || '')
+                .replace(/\{parent_name\}/g, parentName || 'Parent')
+                .replace(/\{school_name\}/g, school.name)
+                .replace(/\{tour_date\}/g, tourDateStr);
+
+            const client = getTwilioClient(school.twilioSid, school.twilioAuthToken);
+            if (client) {
+                try {
+                    await client.messages.create({
+                        body: smsBody,
+                        from: school.twilioPhoneNumber,
+                        to: phone,
+                    });
+                    
+                    await Followup.create({
+                        schoolId,
+                        leadName: parentName || 'Unknown',
+                        type: 'SMS',
+                        status: 'sent',
+                        message: smsBody,
+                        recipient: phone,
+                    });
+                } catch (err) {
+                    console.error('[Tour Confirmation SMS] Error:', err.message);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('sendTourConfirmation error:', err);
+    }
+}
+
+module.exports = { triggerAutomation, sendTourConfirmation };

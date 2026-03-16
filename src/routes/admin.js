@@ -133,7 +133,7 @@ router.get('/schools', async (req, res) => {
 // POST /api/admin/schools - Create a new school + user credentials. Optional referralCode links to referrer.
 router.post('/schools', async (req, res) => {
     try {
-        const { name, email, password, aiNumber, routingNumber, elevenlabsAgentId, referralCode, referrerSchoolId } = req.body;
+        const { name, email, password, address, aiNumber, routingNumber, elevenlabsAgentId, referralCode, referrerSchoolId } = req.body;
 
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'Name, email, and password are required' });
@@ -144,18 +144,28 @@ router.post('/schools', async (req, res) => {
             return res.status(400).json({ error: 'A user with this email already exists' });
         }
 
-        const school = await School.create({
+        const school = new School({
             name,
+            address: address || '',
             aiNumber: aiNumber || '',
             routingNumber: routingNumber || '',
             elevenlabsAgentId: elevenlabsAgentId || '',
             status: 'active',
         });
 
-        const passwordHash = bcrypt.hashSync(password, 10);
+        // Auto-correct timezone based on address
+        if (address) {
+            const { getTimezoneFromAddress } = require('../utils/timezone');
+            const detectedTz = await getTimezoneFromAddress(address);
+            if (detectedTz) school.timezone = detectedTz;
+        }
+
+        await school.save();
+
+        const hashedPassword = await bcrypt.hash(password, 10);
         await User.create({
             email,
-            passwordHash,
+            passwordHash: hashedPassword,
             name: name + ' Admin',
             role: 'school',
             schoolId: school._id,
@@ -228,7 +238,7 @@ router.post('/schools', async (req, res) => {
 router.put('/schools/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, aiNumber, routingNumber, elevenlabsAgentId, status } = req.body;
+        const { name, address, aiNumber, routingNumber, elevenlabsAgentId, status } = req.body;
 
         const school = await School.findById(id);
         if (!school) {
@@ -236,6 +246,16 @@ router.put('/schools/:id', async (req, res) => {
         }
 
         if (name !== undefined) school.name = name;
+        if (address !== undefined && address !== school.address) {
+            school.address = address;
+            // Auto-correct timezone based on address
+            const { getTimezoneFromAddress } = require('../utils/timezone');
+            const detectedTz = await getTimezoneFromAddress(address);
+            if (detectedTz) {
+                school.timezone = detectedTz;
+                console.log(`[Admin] Auto-updated timezone for ${school.name} to ${detectedTz}`);
+            }
+        }
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;

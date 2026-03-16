@@ -597,13 +597,26 @@ router.get('/integrations', async (req, res) => {
         const schoolId = req.user.schoolId;
         const integrations = await Integration.find({ schoolId }).lean();
 
-        const formatted = integrations.map(i => ({
-            id: i._id.toString(),
-            name: i.name,
-            type: i.type,
-            connected: i.connected,
-            connectedAt: i.connectedAt,
-        }));
+        const types = ['google', 'outlook'];
+        const formatted = types.map(type => {
+            const existing = integrations.find(i => i.type === type);
+            if (existing) {
+                return {
+                    id: existing._id.toString(),
+                    name: existing.name,
+                    type: existing.type,
+                    connected: existing.connected,
+                    connectedAt: existing.connectedAt,
+                };
+            }
+            return {
+                id: type,
+                name: type === 'google' ? 'Google Workspace' : 'Microsoft Outlook',
+                type: type,
+                connected: false,
+                connectedAt: null,
+            };
+        });
 
         res.json(formatted);
     } catch (err) {
@@ -648,10 +661,7 @@ router.post('/integrations/:type/disconnect', async (req, res) => {
         const schoolId = req.user.schoolId;
         const { type } = req.params;
 
-        await Integration.updateOne(
-            { schoolId, type },
-            { $set: { connected: false, connectedAt: null }, $unset: { config: 1 } }
-        );
+        await Integration.deleteMany({ schoolId, type });
 
         res.json({ message: `${type} disconnected successfully` });
     } catch (err) {
@@ -740,14 +750,23 @@ router.put('/settings', async (req, res) => {
         }
 
         const {
-            aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
+            address, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
             qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId
         } = req.body;
 
-        if (aiNumber !== undefined) school.aiNumber = aiNumber;
+        if (address !== undefined && address !== school.address) {
+            school.address = address;
+            // Auto-correct timezone based on address
+            const { getTimezoneFromAddress } = require('../utils/timezone');
+            const detectedTz = await getTimezoneFromAddress(address);
+            if (detectedTz) {
+                school.timezone = detectedTz;
+                console.log(`[Settings] Auto-updated timezone for ${school.name} to ${detectedTz}`);
+            }
+        }
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
         if (language !== undefined) school.language = language;

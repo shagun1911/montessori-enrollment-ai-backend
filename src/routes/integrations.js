@@ -79,7 +79,7 @@ router.get('/google/callback', async (req, res) => {
 
         await Integration.findOneAndUpdate(
             { schoolId, type: 'google' },
-            { connected: true, connectedAt: new Date(), config: { tokens } },
+            { name: 'Google Workspace', connected: true, connectedAt: new Date(), config: { tokens } },
             { upsert: true }
         );
 
@@ -114,6 +114,7 @@ router.get('/outlook/callback', async (req, res) => {
         await Integration.findOneAndUpdate(
             { schoolId, type: 'outlook' },
             {
+                name: 'Microsoft Outlook',
                 connected: true,
                 connectedAt: new Date(),
                 config: {

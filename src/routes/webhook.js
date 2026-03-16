@@ -519,6 +519,12 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             calendarProvider: calResult.success ? calResult.provider : '',
         });
 
+        // Send confirmation communications
+        const { sendTourConfirmation } = require('../services/automation');
+        await sendTourConfirmation(schoolId, tourBooking).catch(err => {
+            console.error('[Webhook Booking] Error sending confirmation:', err);
+        });
+
         console.log(`[Webhook Booking] Tour booking created successfully!`);
         console.log(`[Webhook Booking] Tour Booking ID: ${tourBooking._id}`);
         console.log(`[Webhook Booking] Scheduled At: ${start}`);

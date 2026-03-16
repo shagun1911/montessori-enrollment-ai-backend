@@ -28,8 +28,12 @@ const schoolSchema = new mongoose.Schema({
     knowledgeBaseDocumentId: { type: String, default: '' },
     preferredCalendar: { type: String, enum: ['google', 'outlook', 'both', 'none'], default: 'google' },
     address: { type: String, default: '' },
+    timezone: { type: String, default: 'UTC' }, // School's local timezone
     adminEmail: { type: String, default: '' }, // Admin email for webhook notifications
-    elevenlabsAgentId: { type: String, default: '' } // ElevenLabs Agent ID for inbound call identification
+    elevenlabsAgentId: { type: String, default: '' }, // ElevenLabs Agent ID for inbound call identification
+    // Tour confirmation templates
+    tourConfirmationEmailTemplate: { type: String, default: 'Dear {parent_name},\n\nYour tour at {school_name} has been scheduled for {tour_date}.\n\nLocation: {school_address}\n\nWe look forward to seeing you!\n\nWarm regards,\n{school_name}' },
+    tourReminderSmsTemplate: { type: String, default: 'Hi {parent_name}, this is a reminder for your tour at {school_name} tomorrow, {tour_date}. See you then!' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);

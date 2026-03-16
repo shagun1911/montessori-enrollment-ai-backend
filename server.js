@@ -46,6 +46,10 @@ async function start() {
         await connectDatabase();
         await seedDatabase();
 
+        // Start background services
+        const { initReminderService } = require('./src/services/reminderService');
+        initReminderService();
+
         app.listen(PORT, () => {
             console.log(`\n🚀 Montessori Enrollment AI Backend`);
             console.log(`   Server running on http://localhost:${PORT}`);
