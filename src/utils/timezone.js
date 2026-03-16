@@ -35,9 +35,7 @@ async function getTimezoneFromAddress(address) {
         const { lat, lon } = geoRes.data[0];
         console.log(`[Timezone] Found Lat: ${lat}, Lng: ${lon}`);
 
-        // Step 2: Get Timezone from Lat/Lng using GeoPlugin (free, no sign-up for basic use)
-        // Alternative: timezonedb or geonames (needs account)
-        // GeoPlugin example: http://www.geoplugin.net/extras/location.gp?lat=lat&long=lon&format=json
+        // Step 2: Get Timezone from Lat/Lng using GeoPlugin
         const tzRes = await axios.get(`http://www.geoplugin.net/extras/location.gp`, {
             params: {
                 lat,
@@ -52,7 +50,6 @@ async function getTimezoneFromAddress(address) {
             return tz;
         }
 
-        // Fallback: search for timezone names in a simple common mapping if API fails
         return null;
     } catch (err) {
         console.error('[Timezone] Error fetching timezone:', err.message);
