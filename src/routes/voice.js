@@ -4,7 +4,7 @@ const CallLog = require('../models/CallLog');
 const School = require('../models/School');
 const TourBooking = require('../models/TourBooking');
 const { triggerAutomation } = require('../services/automation');
-const { createCalendarEvent, getFreeSlots, isSlotAvailable } = require('../services/calendarService');
+const { createCalendarEvent, getFreeSlots, isSlotAvailable, getBusySlots } = require('../services/calendarService');
 
 const router = express.Router();
 
@@ -95,6 +95,52 @@ router.get('/availability', async (req, res) => {
         res.json({ date, freeSlots });
     } catch (err) {
         console.error('Availability error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/voice/booked-slots - No auth. Returns busy slots for a range (Google, Outlook, and current bookings).
+// Query: schoolId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+router.get('/booked-slots', async (req, res) => {
+    try {
+        const { schoolId, startDate, endDate, date } = req.query;
+        if (!schoolId) {
+            return res.status(400).json({ error: 'schoolId is required' });
+        }
+
+        let start, end;
+        if (date) {
+            start = new Date(`${date}T00:00:00.000Z`);
+            end = new Date(`${date}T23:59:59.999Z`);
+        } else if (startDate && endDate) {
+            start = new Date(startDate);
+            end = new Date(endDate);
+        } else {
+            // Default to today and next 7 days
+            start = new Date();
+            start.setUTCHours(0, 0, 0, 0);
+            end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+        }
+
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return res.status(400).json({ error: 'Invalid date format' });
+        }
+
+        const { busySlots, error } = await getBusySlots(schoolId, start, end);
+        if (error) {
+            return res.status(400).json({ error });
+        }
+
+        res.json({
+            schoolId,
+            range: { start: start.toISOString(), end: end.toISOString() },
+            bookedSlots: busySlots.map(s => ({
+                start: s.start.toISOString(),
+                end: s.end.toISOString()
+            }))
+        });
+    } catch (err) {
+        console.error('Booked slots error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
