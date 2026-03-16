@@ -1,10 +1,12 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const { google } = require('googleapis');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const School = require('../models/School');
 const User = require('../models/User');
 const TourBooking = require('../models/TourBooking');
 const Followup = require('../models/Followup');
+const Integration = require('../models/Integration');
 const { processTranscript } = require('../services/openaiService');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
 const jwt = require('jsonwebtoken');
@@ -543,6 +545,94 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
 }
 
 /**
+ * Send email via Gmail API using OAuth tokens from Google Calendar integration
+ * @param {string|ObjectId} schoolId - School ObjectId
+ * @param {string} to - Recipient email address
+ * @param {string} subject - Email subject
+ * @param {string} text - Email body (plain text)
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+async function sendEmailViaGmail(schoolId, to, subject, text) {
+    try {
+        // Get Google Integration for this school
+        const integration = await Integration.findOne({
+            schoolId,
+            type: 'google',
+            connected: true
+        }).lean();
+
+        if (!integration || !integration.config?.tokens) {
+            return {
+                success: false,
+                error: 'Google Calendar integration not connected. Please connect your Google Calendar in Settings.'
+            };
+        }
+
+        const tokens = integration.config.tokens;
+        const userEmail = integration.config.userEmail || null;
+
+        // Create OAuth2 client
+        const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_REDIRECT_URI
+        );
+
+        oauth2Client.setCredentials(tokens);
+
+        // Listen for token refresh
+        oauth2Client.on('tokens', async (newTokens) => {
+            console.log('[Gmail] Tokens refreshed for school:', schoolId);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { 'config.tokens': { ...tokens, ...newTokens } } }
+            );
+        });
+
+        // Get Gmail API client
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+        // Use stored userEmail as "from" address, or fallback to tokens email
+        const fromEmail = userEmail || tokens.email || 'noreply@enrollmentai.com';
+
+        // Create email message in RFC 2822 format
+        const message = [
+            `From: ${fromEmail}`,
+            `To: ${to}`,
+            `Subject: ${subject}`,
+            `Content-Type: text/plain; charset=utf-8`,
+            '',
+            text
+        ].join('\n');
+
+        // Encode message in base64url format (Gmail API requirement)
+        const encodedMessage = Buffer.from(message)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        // Send email via Gmail API
+        const response = await gmail.users.messages.send({
+            userId: 'me',
+            requestBody: {
+                raw: encodedMessage
+            }
+        });
+
+        console.log(`[Gmail] Email sent successfully. Message ID: ${response.data.id}`);
+        return { success: true };
+
+    } catch (err) {
+        console.error('[Gmail] Error sending email:', err.message);
+        return {
+            success: false,
+            error: err.message || 'Failed to send email via Gmail API'
+        };
+    }
+}
+
+/**
  * Send email notification to admin when webhook is received and processed
  * @param {Object} webhook - The webhook document (with AI processing results)
  * @param {Object} aiResult - The AI processing result (summary, tour booking info)
@@ -608,28 +698,6 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             return;
         }
         
-        // Get email transport
-        const host = process.env.SMTP_HOST;
-        const port = process.env.SMTP_PORT || 587;
-        const user = process.env.SMTP_USER;
-        const pass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
-        const secure = process.env.SMTP_SECURE === 'true';
-
-        if (!host || !user || !pass) {
-            console.warn('[Webhook Email] SMTP not configured, cannot send admin notification');
-            return;
-        }
-
-        const nodemailer = require('nodemailer');
-        const transport = nodemailer.createTransport({
-            host,
-            port: Number(port),
-            secure,
-            auth: { user, pass },
-        });
-
-        const from = process.env.MAIL_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@enrollmentai.com';
-        
         // Format call information
         const callDuration = webhook.metadata?.phone_call?.call_duration_secs || 0;
         const callDurationMin = Math.floor(callDuration / 60);
@@ -691,12 +759,27 @@ ${tourNotes ? `- Notes: ${tourNotes}\n` : ''}
 Best regards,
 Montessori Enrollment AI Platform`;
 
-        await transport.sendMail({
-            from,
-            to: adminEmail,
-            subject: emailSubject,
-            text: emailBody,
-        });
+        // Send email via Gmail API using Google Calendar integration
+        const emailResult = await sendEmailViaGmail(
+            schoolObjectId,
+            adminEmail,
+            emailSubject,
+            emailBody
+        );
+
+        if (!emailResult.success) {
+            console.error(`[Webhook Email] Failed to send email: ${emailResult.error}`);
+            // Create Followup record with failed status
+            await Followup.create({
+                schoolId,
+                leadName: 'Admin Notification',
+                type: 'Email',
+                status: 'failed',
+                message: emailBody,
+                recipient: adminEmail,
+            });
+            return;
+        }
 
         // Create Followup record to track admin email notification
         await Followup.create({
@@ -708,7 +791,7 @@ Montessori Enrollment AI Platform`;
             recipient: adminEmail,
         });
 
-        console.log(`[Webhook Email] Admin notification sent successfully to ${adminEmail}`);
+        console.log(`[Webhook Email] Admin notification sent successfully to ${adminEmail} via Gmail API`);
 
     } catch (err) {
         console.error('[Webhook Email] Error sending admin email notification:', err.message);

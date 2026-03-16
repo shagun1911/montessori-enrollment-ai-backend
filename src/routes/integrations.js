@@ -31,6 +31,7 @@ function getGoogleAuthUrl(schoolId) {
         scope: [
             'https://www.googleapis.com/auth/calendar.events',
             'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/gmail.send', // Gmail API scope for sending emails
         ],
         state: schoolId.toString(),
         prompt: 'consent',
@@ -76,10 +77,54 @@ router.get('/google/callback', async (req, res) => {
         const schoolId = state;
         const oauth2Client = createGoogleOAuthClient();
         const { tokens } = await oauth2Client.getToken(code);
+        oauth2Client.setCredentials(tokens);
+
+        // Fetch user email from Google
+        let userEmail = null;
+        try {
+            // Option 1: Try to get email from ID token
+            if (tokens.id_token) {
+                try {
+                    const ticket = await oauth2Client.verifyIdToken({
+                        idToken: tokens.id_token,
+                        audience: googleConfig.clientId
+                    });
+                    const payload = ticket.getPayload();
+                    userEmail = payload.email;
+                } catch (idTokenErr) {
+                    console.warn('[Integrations] Failed to verify ID token, trying userinfo API:', idTokenErr.message);
+                }
+            }
+
+            // Option 2: Fallback to userinfo API
+            if (!userEmail && tokens.access_token) {
+                const axios = require('axios');
+                const userInfoResponse = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+                    headers: {
+                        Authorization: `Bearer ${tokens.access_token}`
+                    }
+                });
+                userEmail = userInfoResponse.data.email;
+            }
+        } catch (emailErr) {
+            console.error('[Integrations] Failed to fetch user email from Google:', emailErr.message);
+            // Continue without email - connection still works, just won't have email stored
+        }
+
+        // Store integration with tokens and email
+        const config = { tokens };
+        if (userEmail) {
+            config.userEmail = userEmail;
+        }
 
         await Integration.findOneAndUpdate(
             { schoolId, type: 'google' },
-            { name: 'Google Workspace', connected: true, connectedAt: new Date(), config: { tokens } },
+            { 
+                name: 'Google Workspace', 
+                connected: true, 
+                connectedAt: new Date(), 
+                config 
+            },
             { upsert: true }
         );
 
