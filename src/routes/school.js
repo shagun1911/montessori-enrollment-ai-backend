@@ -195,7 +195,6 @@ router.get('/dashboard', async (req, res) => {
         }
 
         const school = await School.findById(schoolId).select('aiNumber adminEmail').lean();
-        const toursBooked = await TourBooking.countDocuments({ schoolId });
 
         // Get admin email notifications scoped to this school
         let adminEmailNotifications = [];
@@ -266,9 +265,9 @@ router.get('/dashboard', async (req, res) => {
 
         // ── STEP 2: Fetch Scoped Webhooks ──────────
         // Search by both discrete schoolId (best) and unique AI number (resilient fallback)
+        // Increased limit to 500 to capture more historical data
         const schoolWebhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
-            ai_processed: true,
             $or: [
                 { schoolId: schoolObjectId },
                 { 
@@ -278,7 +277,7 @@ router.get('/dashboard', async (req, res) => {
                     'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
                 }
             ]
-        }).sort({ received_at: -1 }).limit(100).lean();
+        }).sort({ received_at: -1 }).limit(500).lean();
 
         const webhookCalls = schoolWebhooks.map(wh => {
             const callTimestamp = wh.metadata?.start_time_unix_secs 
@@ -328,9 +327,13 @@ router.get('/dashboard', async (req, res) => {
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
+        // Calculate metrics from all calls (not just recent ones)
         const totalCalls = calls.length;
         const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
         const callMinutes = Math.floor(totalDurationSeconds / 60);
+        
+        // Ensure toursBooked is accurate - count from TourBooking collection
+        const actualToursBooked = await TourBooking.countDocuments({ schoolId });
 
         // Chart Data (14 days)
         const chartData = [];
@@ -372,7 +375,7 @@ router.get('/dashboard', async (req, res) => {
         res.json({
             metrics: [
                 { label: 'Total Calls', value: totalCalls },
-                { label: 'Tours Booked', value: toursBooked },
+                { label: 'Tours Booked', value: actualToursBooked },
                 { label: 'Call Minutes', value: callMinutes },
             ],
             chartData,
