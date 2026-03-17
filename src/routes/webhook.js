@@ -454,6 +454,13 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         const start = new Date(tourDate);
         const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-minute slot
 
+        // Validate that the booking date is not in the past
+        const now = new Date();
+        if (start < now) {
+            console.warn(`[Webhook Booking] Cannot create booking for past date: ${start.toISOString()}. Current time: ${now.toISOString()}`);
+            return;
+        }
+
         // Check slot availability
         const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
         if (!available) {

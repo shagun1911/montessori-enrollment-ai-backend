@@ -164,6 +164,13 @@ router.post('/book-tour/:schoolId', async (req, res) => {
         if (isNaN(start.getTime())) {
             return res.status(400).json({ error: 'Invalid date/time' });
         }
+
+        // Validate that the booking date is not in the past
+        const now = new Date();
+        if (start < now) {
+            return res.status(400).json({ error: 'Cannot book a tour for a past date. Please select a future date and time.' });
+        }
+
         const end = new Date(start.getTime() + 15 * 60 * 1000);
 
         const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);

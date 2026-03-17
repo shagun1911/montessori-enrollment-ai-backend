@@ -226,32 +226,40 @@ router.post('/call-end', async (req, res) => {
         if (tourScheduledAt) {
             const start = new Date(tourScheduledAt);
             if (!isNaN(start.getTime())) {
-                const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-min block (per Phase 1 spec)
-                const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
-                if (!available) {
-                    tourError = slotError || 'That time is no longer available or overlaps an existing event.';
+                // Validate that the booking date is not in the past
+                const now = new Date();
+                if (start < now) {
+                    tourError = 'Cannot book a tour for a past date. Please select a future date and time.';
                 } else {
-                    const school = await School.findById(schoolId).select('name').lean();
-                    const title = `School Tour – ${parentName || 'Parent'}`;
-                    const calResult = await createCalendarEvent(schoolId, {
-                        title,
-                        startDateTime: start,
-                        endDateTime: end,
-                        description: `Tour for ${parentName || 'Parent'}. Phone: ${phone || 'N/A'}. Email: ${email || 'N/A'}. Reason: ${reason || 'Inquiry'}.`,
-                    });
-                    tourBooking = await TourBooking.create({
-                        schoolId,
-                        parentName,
-                        phone: phone || '',
-                        email: email || '',
-                        childAge: childAge || '',
-                        reason: reason || '',
-                        scheduledAt: start,
-                        calendarEventId: calResult.success ? calResult.eventId : '',
-                        calendarProvider: calResult.success ? calResult.provider : '',
-                        callLogId: callLog._id,
-                    });
+                    const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-min block (per Phase 1 spec)
+                    const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
+                    if (!available) {
+                        tourError = slotError || 'That time is no longer available or overlaps an existing event.';
+                    } else {
+                        const school = await School.findById(schoolId).select('name').lean();
+                        const title = `School Tour – ${parentName || 'Parent'}`;
+                        const calResult = await createCalendarEvent(schoolId, {
+                            title,
+                            startDateTime: start,
+                            endDateTime: end,
+                            description: `Tour for ${parentName || 'Parent'}. Phone: ${phone || 'N/A'}. Email: ${email || 'N/A'}. Reason: ${reason || 'Inquiry'}.`,
+                        });
+                        tourBooking = await TourBooking.create({
+                            schoolId,
+                            parentName,
+                            phone: phone || '',
+                            email: email || '',
+                            childAge: childAge || '',
+                            reason: reason || '',
+                            scheduledAt: start,
+                            calendarEventId: calResult.success ? calResult.eventId : '',
+                            calendarProvider: calResult.success ? calResult.provider : '',
+                            callLogId: callLog._id,
+                        });
+                    }
                 }
+            } else {
+                // Past date validation failed - tourError already set above
             }
         }
 
