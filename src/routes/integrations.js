@@ -128,10 +128,10 @@ router.get('/google/callback', async (req, res) => {
             { upsert: true }
         );
 
-        res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=google`);
+        res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=google`);
     } catch (err) {
         console.error('Google Callback Error:', err);
-        res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=google`);
+        res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=google`);
     }
 });
 
@@ -140,10 +140,10 @@ router.get('/outlook/callback', async (req, res) => {
     const { code, state, error, error_description } = req.query;
     if (error) {
         console.error('Outlook OAuth error:', error, error_description);
-        return res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
+        return res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
     }
     if (!code || !state) {
-        return res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
+        return res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
     }
 
     try {
@@ -155,7 +155,7 @@ router.get('/outlook/callback', async (req, res) => {
         };
 
         const response = await pca.acquireTokenByCode(tokenRequest);
-
+        
         await Integration.findOneAndUpdate(
             { schoolId, type: 'outlook' },
             {
@@ -170,10 +170,10 @@ router.get('/outlook/callback', async (req, res) => {
             { upsert: true }
         );
 
-        res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=outlook`);
+        res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=outlook`);
     } catch (err) {
         console.error('Outlook Callback Error:', err);
-        res.redirect(`${process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
+        res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?error=outlook`);
     }
 });
 

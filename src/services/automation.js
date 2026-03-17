@@ -28,8 +28,8 @@ async function triggerAutomation(schoolId, leadData) {
             return result;
         }
         const { parentName, phone, email, childAge } = leadData;
-        const formLink = process.env.FORM_BASE_URL
-            ? `${process.env.FORM_BASE_URL}/inquiry/${school._id}`
+        const formLink = (process.env.FRONTEND_URL || process.env.FORM_BASE_URL)
+            ? `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL}/inquiry/${school._id}`
             : `https://enrollmentai.com/inquiry/${school._id}`;
 
         // SMS via Twilio

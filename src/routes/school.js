@@ -276,7 +276,7 @@ router.get('/dashboard', async (req, res) => {
 
         const schoolAiNumber = normalizePhone(school?.aiNumber || '');
         const userToken = req.headers.authorization?.split(' ')[1] || '';
-        const backendUrl = `${req.protocol}://${req.get('host')}`;
+        const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
 
         // ── STEP 1: Fetch VoiceAI Logs (SIP) ──────────
         let voiceAiCalls = [];
@@ -452,7 +452,7 @@ router.get('/call-logs', async (req, res) => {
         }
 
         const userToken = req.headers.authorization?.split(' ')[1] || '';
-        const backendUrl = `${req.protocol}://${req.get('host')}`;
+        const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
 
         // Helper to normalize phones
         const normalizePhone = (phone) => {
@@ -1140,7 +1140,7 @@ router.get('/referrals', async (req, res) => {
 
         res.json({
             referralCode: referralLink ? referralLink.code : null,
-            referralLink: referralLink ? `${process.env.FORM_BASE_URL || 'http://localhost:5173'}/refer/${referralLink.code}` : null,
+            referralLink: referralLink ? `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/refer/${referralLink.code}` : null,
             referrals: formatted,
         });
     } catch (err) {
@@ -1169,7 +1169,7 @@ router.post('/referrals/generate', async (req, res) => {
 
         res.json({
             referralCode: code,
-            referralLink: `${process.env.FORM_BASE_URL || 'http://localhost:5173'}/refer/${code}`,
+            referralLink: `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/refer/${code}`,
         });
     } catch (err) {
         console.error('Generate referral error:', err);
