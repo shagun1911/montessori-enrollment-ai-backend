@@ -128,7 +128,7 @@ async function patchAgentKnowledgeBaseOnly(agentId, documentId) {
         return null;
     }
     try {
-        const url = `${baseUrl}/api/v1/agents/${agentId}`;
+        const url = `${baseUrl}/api/v1/agents/${agentId}/prompt`;
         const payload = {
             knowledge_base_ids: documentId && documentId.trim() ? [documentId] : []
         };
