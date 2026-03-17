@@ -129,11 +129,6 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         return null;
     }
 
-    if (!knowledgeBaseId) {
-        console.warn('[Agent PATCH] No knowledge base ID provided, skipping agent update');
-        return null;
-    }
-
     try {
         const url = `${baseUrl}/api/v1/agents/${agentId}`;
 
@@ -147,7 +142,7 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
                     }
                 }
             },
-            knowledge_base_ids: [knowledgeBaseId]
+            knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : []
         };
 
         console.log(`[Agent PATCH] Request URL: ${url}`);
@@ -167,7 +162,7 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         }, null, 2));
         console.log(`[Agent PATCH] Full first_message length: ${(firstMessage || '').length} characters`);
         console.log(`[Agent PATCH] Full system_prompt length: ${(systemPrompt || '').length} characters`);
-        console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId}`);
+        console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId || '(none)'}`);
 
         const response = await axios.patch(url, payload, {
             headers: {
@@ -840,8 +835,10 @@ router.put('/settings', async (req, res) => {
             tourConfirmationEmailTemplate, tourReminderSmsTemplate
         } = req.body;
 
-        // Capture old address BEFORE overwriting, for timezone detection comparison
+        // Capture old values BEFORE overwriting (for change detection)
         const oldAddress = school.address;
+        const oldScript = school.script;
+        const oldSystemPrompt = school.systemPrompt;
 
         if (name !== undefined) school.name = name;
         if (address !== undefined) school.address = address;
@@ -863,6 +860,10 @@ router.put('/settings', async (req, res) => {
         if (language !== undefined) school.language = language;
         if (script !== undefined) school.script = script;
         if (systemPrompt !== undefined) school.systemPrompt = systemPrompt;
+
+        const scriptChanged = script !== undefined && script !== oldScript;
+        const systemPromptChanged = systemPrompt !== undefined && systemPrompt !== oldSystemPrompt;
+
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
         if (twilioSid !== undefined) school.twilioSid = twilioSid;
@@ -906,7 +907,9 @@ router.put('/settings', async (req, res) => {
             console.log('[PUT /settings] qaPairs set on document:', school.qaPairs.length);
         }
 
-        // Sync with ElevenLabs Knowledge Base if qaPairs changed
+        let didUpdateAgentInKbSync = false;
+
+        // Sync with ElevenLabs Knowledge Base if qaPairs changed (DELETE old KB, POST new KB, then PATCH agent)
         if (qaPairsChanged && Array.isArray(qaPairs)) {
             try {
                 // Step 1: Delete old KB document only if document_id exists and is not empty
@@ -935,6 +938,7 @@ router.put('/settings', async (req, res) => {
                             if (agentId) {
                                 try {
                                     await updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, newDocumentId);
+                                    didUpdateAgentInKbSync = true;
                                     console.log('[PUT /settings] Agent updated with knowledge base ID');
                                 } catch (err) {
                                     console.error('[PUT /settings] Failed to update agent, but KB document was created:', err);
@@ -951,6 +955,24 @@ router.put('/settings', async (req, res) => {
             } catch (err) {
                 console.error('[PUT /settings] KB sync failed:', err);
                 // Continue saving settings even if KB sync fails
+            }
+        }
+
+        // When only first message and/or system prompt changed: PATCH agent (no KB DELETE/POST)
+        if ((scriptChanged || systemPromptChanged) && !didUpdateAgentInKbSync) {
+            const agentId = process.env.AGENT_ID;
+            if (agentId) {
+                try {
+                    await updateAgentWithKnowledgeBase(
+                        agentId,
+                        school.script || '',
+                        school.systemPrompt || '',
+                        school.knowledgeBaseDocumentId || ''
+                    );
+                    console.log('[PUT /settings] Agent updated (first message / system prompt only)');
+                } catch (err) {
+                    console.error('[PUT /settings] Failed to update agent with new script/prompt:', err);
+                }
             }
         }
 
