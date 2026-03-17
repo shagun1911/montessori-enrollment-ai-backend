@@ -132,37 +132,31 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
     try {
         const url = `${baseUrl}/api/v1/agents/${agentId}`;
 
+        const fullPrompt = `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`;
         const payload = {
             conversation_config: {
                 agent: {
                     first_message: firstMessage || '',
                     language: 'en',
                     prompt: {
-                        prompt: `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`
+                        prompt: fullPrompt
                     }
                 }
             },
             knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : []
         };
 
+        console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
         console.log(`[Agent PATCH] Request URL: ${url}`);
         console.log(`[Agent PATCH] Agent ID: ${agentId}`);
-        console.log(`[Agent PATCH] Request Payload:`, JSON.stringify({
-            ...payload,
-            conversation_config: {
-                ...payload.conversation_config,
-                agent: {
-                    ...payload.conversation_config.agent,
-                    first_message: (firstMessage || '').substring(0, 100) + ((firstMessage || '').length > 100 ? '...' : ''),
-                    prompt: {
-                        prompt: (systemPrompt || '').substring(0, 100) + ((systemPrompt || '').length > 100 ? '...' : '')
-                    }
-                }
-            }
-        }, null, 2));
-        console.log(`[Agent PATCH] Full first_message length: ${(firstMessage || '').length} characters`);
-        console.log(`[Agent PATCH] Full system_prompt length: ${(systemPrompt || '').length} characters`);
         console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId || '(none)'}`);
+        console.log(`[Agent PATCH] first_message length: ${(firstMessage || '').length} characters`);
+        console.log(`[Agent PATCH] first_message (full):`, firstMessage || '');
+        console.log(`[Agent PATCH] system_prompt length: ${(systemPrompt || '').length} characters`);
+        console.log(`[Agent PATCH] system_prompt (full):`, systemPrompt || '');
+        console.log(`[Agent PATCH] full prompt (with APPOINTMENT_AGENT_PROMPT) length: ${fullPrompt.length} characters`);
+        console.log('[Agent PATCH] Payload (full):', JSON.stringify(payload, null, 2));
+        console.log('[Agent PATCH] ====================================');
 
         const response = await axios.patch(url, payload, {
             headers: {
@@ -170,9 +164,12 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
             }
         });
 
+        console.log('[Agent PATCH] ========== PATCH RESPONSE ==========');
         console.log(`[Agent PATCH] Response Status: ${response.status}`);
+        console.log(`[Agent PATCH] Response Headers:`, JSON.stringify(response.headers, null, 2));
         console.log(`[Agent PATCH] Response Data:`, JSON.stringify(response.data, null, 2));
-        console.log(`[Agent PATCH] Successfully updated agent with knowledge base`);
+        console.log('[Agent PATCH] Successfully updated agent');
+        console.log('[Agent PATCH] =====================================');
         return response.data;
     } catch (err) {
         console.error(`[Agent PATCH] Failed to update agent`);

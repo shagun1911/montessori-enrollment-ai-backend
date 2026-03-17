@@ -502,15 +502,19 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         console.log(`[Webhook Booking] Found ${integrations.length} connected integration(s):`, 
             integrations.map(i => `${i.type} (connected: ${i.connected})`).join(', ') || 'None');
 
-        // Create calendar event
+        // Create calendar event (include parent email so they receive a calendar invite)
+        const parentEmail = parentInfo.email || '';
         console.log(`[Webhook Booking] Attempting to create calendar event with preference: ${school?.preferredCalendar || 'google'}...`);
+        if (parentEmail) {
+            console.log(`[Webhook Booking] Adding parent as attendee for calendar invite: ${parentEmail}`);
+        }
 
-        // Create calendar event
         const calResult = await createCalendarEvent(schoolId, {
             title,
             startDateTime: start,
             endDateTime: end,
-            description
+            description,
+            parentEmail: parentEmail || undefined
         });
         
         console.log(`[Webhook Booking] Calendar event creation result:`, JSON.stringify(calResult, null, 2));

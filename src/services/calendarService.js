@@ -384,12 +384,16 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
             end: { dateTime: end.toISOString(), timeZone: tz },
             attendees: parentEmail ? [{ email: parentEmail }] : [],
         };
-        const res = await calendar.events.insert({
+        const insertOptions = {
             calendarId: 'primary',
             requestBody: event,
-        });
+        };
+        if (parentEmail) {
+            insertOptions.sendUpdates = 'all'; // Send calendar invite email to attendees
+        }
+        const res = await calendar.events.insert(insertOptions);
         const eventId = res.data.id || '';
-        console.log('[Calendar] Google event created:', eventId);
+        console.log('[Calendar] Google event created:', eventId, parentEmail ? `(invite sent to ${parentEmail})` : '');
         return { success: true, eventId, provider: 'google' };
     } catch (err) {
         console.error('[Calendar] Google creation error:', err.message);
