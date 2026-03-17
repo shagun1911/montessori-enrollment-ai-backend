@@ -17,7 +17,7 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 // GOOGLE_AUTH_REDIRECT_URI for authentication (frontend), GOOGLE_REDIRECT_URI for calendar integrations (backend)
 // If not set, construct from FORM_BASE_URL or default to localhost
 const googleAuthRedirectUri = process.env.GOOGLE_AUTH_REDIRECT_URI 
-    || `${process.env.FORM_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:5173'}/auth/google/callback`;
+    || `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/auth/google/callback`;
 
 let oauth2Client = null;
 if (googleClientId && googleClientSecret) {
