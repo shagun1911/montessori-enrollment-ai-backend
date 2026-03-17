@@ -28,7 +28,7 @@ const schoolSchema = new mongoose.Schema({
     knowledgeBaseDocumentId: { type: String, default: '' },
     preferredCalendar: { type: String, enum: ['google', 'outlook', 'both', 'none'], default: 'google' },
     address: { type: String, default: '' },
-    timezone: { type: String, default: 'UTC' }, // School's local timezone
+    timezone: { type: String, default: 'America/Chicago' }, // School's local timezone
     adminEmail: { type: String, default: '' }, // Admin email for webhook notifications
     elevenlabsAgentId: { type: String, default: '' }, // ElevenLabs Agent ID for inbound call identification
     // Tour confirmation templates

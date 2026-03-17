@@ -753,16 +753,19 @@ router.put('/settings', async (req, res) => {
         }
 
         const {
-            address, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
+            name, address, timezone, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
             qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId
         } = req.body;
 
-        if (address !== undefined && address !== school.address) {
-            school.address = address;
-            // Auto-correct timezone based on address
+        if (name !== undefined) school.name = name;
+        if (address !== undefined) school.address = address;
+        if (timezone !== undefined) school.timezone = timezone;
+        
+        // Auto-correct timezone based on address ONLY if timezone wasn't manually provided
+        if (address !== undefined && address !== school.address && timezone === undefined) {
             const { getTimezoneFromAddress } = require('../utils/timezone');
             const detectedTz = await getTimezoneFromAddress(address);
             if (detectedTz) {
