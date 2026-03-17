@@ -730,6 +730,25 @@ router.post('/integrations/:type/disconnect', async (req, res) => {
     }
 });
 
+// GET /api/school/detect-timezone?address=...
+router.get('/detect-timezone', async (req, res) => {
+    try {
+        const { address } = req.query;
+        if (!address || String(address).trim().length < 5) {
+            return res.status(400).json({ error: 'Address is too short to detect timezone.' });
+        }
+        const { getTimezoneFromAddress } = require('../utils/timezone');
+        const timezone = await getTimezoneFromAddress(String(address).trim());
+        if (!timezone) {
+            return res.status(404).json({ error: 'Could not detect timezone for this address. Please select manually.' });
+        }
+        res.json({ timezone });
+    } catch (err) {
+        console.error('[detect-timezone] Error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // GET /api/school/settings
 router.get('/settings', async (req, res) => {
     try {
@@ -760,6 +779,8 @@ router.get('/settings', async (req, res) => {
         res.json({
             id: school._id.toString(),
             name: school.name,
+            address: school.address || '',
+            timezone: school.timezone || 'America/Chicago',
             aiNumber: school.aiNumber || '',
             routingNumber: school.routingNumber || '',
             escalationNumber: school.escalationNumber || '',
@@ -777,10 +798,11 @@ router.get('/settings', async (req, res) => {
             emailTemplate: school.emailTemplate || 'Dear {parent_name},\n\nThank you for contacting us regarding enrollment at {school_name}.\n\nPlease find the inquiry form at: {form_link}\n\nWarm regards,\n{school_name}',
             qaPairs,
             knowledgeBaseDocumentId: school.knowledgeBaseDocumentId || '',
-            systemPrompt: school.systemPrompt || '',
             adminEmail: school.adminEmail || '',
             preferredCalendar: school.preferredCalendar || 'google',
             elevenlabsAgentId: school.elevenlabsAgentId || '',
+            tourConfirmationEmailTemplate: school.tourConfirmationEmailTemplate || '',
+            tourReminderSmsTemplate: school.tourReminderSmsTemplate || '',
             googleConnected,
             outlookConnected,
         });
@@ -814,15 +836,18 @@ router.put('/settings', async (req, res) => {
             businessHoursStart, businessHoursEnd,
             twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
-            qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId
+            qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId,
+            tourConfirmationEmailTemplate, tourReminderSmsTemplate
         } = req.body;
+
+        // Capture old address BEFORE overwriting, for timezone detection comparison
+        const oldAddress = school.address;
 
         if (name !== undefined) school.name = name;
         if (address !== undefined) school.address = address;
-        if (timezone !== undefined) school.timezone = timezone;
 
-        // Auto-correct timezone based on address ONLY if timezone wasn't manually provided
-        if (address !== undefined && address !== school.address && timezone === undefined) {
+        // Auto-detect timezone from address when address changes AND timezone not manually set
+        if (address !== undefined && address.trim() && address !== oldAddress && timezone === undefined) {
             const { getTimezoneFromAddress } = require('../utils/timezone');
             const detectedTz = await getTimezoneFromAddress(address);
             if (detectedTz) {
@@ -830,6 +855,9 @@ router.put('/settings', async (req, res) => {
                 console.log(`[Settings] Auto-updated timezone for ${school.name} to ${detectedTz}`);
             }
         }
+
+        // Apply manually supplied timezone (overrides auto-detected)
+        if (timezone !== undefined) school.timezone = timezone;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
         if (language !== undefined) school.language = language;
@@ -847,6 +875,8 @@ router.put('/settings', async (req, res) => {
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
         if (adminEmail !== undefined) school.adminEmail = adminEmail;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
+        if (tourConfirmationEmailTemplate !== undefined) school.tourConfirmationEmailTemplate = tourConfirmationEmailTemplate;
+        if (tourReminderSmsTemplate !== undefined) school.tourReminderSmsTemplate = tourReminderSmsTemplate;
 
         // Check if qaPairs changed
         let qaPairsChanged = false;

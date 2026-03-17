@@ -180,25 +180,50 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
     // Determine school timezone for range calculations
     const School = require('../models/School');
     const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd timezone').lean();
-    const tz = school?.timezone || 'UTC';
+    const tz = school?.timezone || 'America/Chicago';
 
-    const dayStart = new Date(`${dateStr}T00:00:00.000Z`); // Base date to work from
-    
-    // Check if weekend
-    const dayOfWeek = new Date(dateStr).getDay();
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
+    // Check if weekend in the school's local timezone
+    // Use Intl to get the local day of week for the school
+    const localDateForWeekend = new Date(`${dateStr}T12:00:00Z`);
+    const localDayOfWeek = parseInt(
+        new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend)
+            === 'Sun' ? '0' :
+        new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend)
+            === 'Sat' ? '6' : '1'
+    );
+    const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend);
+    if (weekdayStr === 'Sun' || weekdayStr === 'Sat') {
         return { freeSlots: [], error: 'Weekend bookings are not allowed.' };
     }
 
     const [startH, startM] = (school?.businessHoursStart || '09:00').split(':').map(Number);
     const [endH, endM] = (school?.businessHoursEnd || '17:00').split(':').map(Number);
-    
-    // For now, we'll continue using UTC for compatibility, 
-    // but in a production app we would use a library like luxon to handle 'tz'
-    const rangeStart = new Date(dayStart);
-    rangeStart.setUTCHours(startH || 9, startM || 0, 0, 0);
-    const rangeEnd = new Date(dayStart);
-    rangeEnd.setUTCHours(endH || 17, endM || 0, 0, 0);
+
+    // Build the business hour range in the school's local timezone.
+    // We construct a local time string and parse it properly so UTC offset is respected.
+    const toUtcFromLocal = (dateStr, hours, minutes, tz) => {
+        // Use Intl to figure out the UTC offset at that specific date/time in the school's tz
+        // Strategy: create an ambiguous ISO without tz, then find how JS interprets it vs local
+        const localStr = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+        // Parse as UTC, then determine offset for the school's timezone at that moment
+        const guessUtc = new Date(localStr + 'Z');
+        // Get what 'hour' the school timezone sees at the guessed UTC time
+        const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: tz,
+            hour: 'numeric',
+            minute: 'numeric',
+            hour12: false
+        });
+        const parts = formatter.formatToParts(guessUtc);
+        const actualH = parseInt(parts.find(p => p.type === 'hour').value);
+        const actualM = parseInt(parts.find(p => p.type === 'minute').value);
+        // Calculate difference and apply correction
+        const diffMs = ((hours - actualH) * 60 + (minutes - actualM)) * 60 * 1000;
+        return new Date(guessUtc.getTime() + diffMs);
+    };
+
+    const rangeStart = toUtcFromLocal(dateStr, startH || 9, startM || 0, tz);
+    const rangeEnd = toUtcFromLocal(dateStr, endH || 17, endM || 0, tz);
 
     const { busySlots, error } = await getBusySlots(schoolId, rangeStart, rangeEnd);
     if (error) return { freeSlots: [], error };
@@ -346,12 +371,17 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
             );
         });
 
+        // Fetch school timezone for this event
+        const School = require('../models/School');
+        const school = await School.findById(integration.schoolId).select('timezone').lean();
+        const tz = school?.timezone || 'America/Chicago';
+
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
         const event = {
             summary: title,
             description: description || '',
-            start: { dateTime: start.toISOString() },
-            end: { dateTime: end.toISOString() },
+            start: { dateTime: start.toISOString(), timeZone: tz },
+            end: { dateTime: end.toISOString(), timeZone: tz },
             attendees: parentEmail ? [{ email: parentEmail }] : [],
         };
         const res = await calendar.events.insert({
@@ -373,12 +403,18 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
         if (!accessToken) {
             return { success: false, error: 'Outlook not authorized. Reconnect in Integrations.' };
         }
+
+        // Fetch school timezone
+        const School = require('../models/School');
+        const school = await School.findById(integration.schoolId).select('timezone').lean();
+        const tz = school?.timezone || 'America/Chicago';
+
         const fmtDate = (d) => d.toISOString().replace('Z', '').replace(/\.000$/, '');
         const event = {
             subject: title,
             body: { contentType: 'text', content: description || '' },
-            start: { dateTime: fmtDate(start), timeZone: 'UTC' },
-            end: { dateTime: fmtDate(end), timeZone: 'UTC' },
+            start: { dateTime: fmtDate(start), timeZone: tz },
+            end: { dateTime: fmtDate(end), timeZone: tz },
             attendees: parentEmail ? [
                 { emailAddress: { address: parentEmail }, type: 'required' }
             ] : []
