@@ -9,6 +9,8 @@ const Followup = require('../models/Followup');
 const Integration = require('../models/Integration');
 const { processTranscript } = require('../services/openaiService');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
+const { sendEmail } = require('../services/mailService');
+const { generateICS } = require('../utils/ics');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
 
@@ -532,11 +534,39 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             calendarProvider: calResult.success ? calResult.provider : '',
         });
 
-        // Send confirmation communications
+        // Send confirmation communications (email + optional SMS)
         const { sendTourConfirmation } = require('../services/automation');
         await sendTourConfirmation(schoolId, tourBooking).catch(err => {
             console.error('[Webhook Booking] Error sending confirmation:', err);
         });
+
+        // Send calendar invite to parent email (ICS attachment) so they can add the event to their calendar
+        if (parentEmail && calResult.success) {
+            try {
+                const school = await School.findById(schoolId).select('name address timezone').lean();
+                const tourDateStr = new Date(start).toLocaleString('en-US', {
+                    dateStyle: 'full',
+                    timeStyle: 'short',
+                    timeZone: school?.timezone || 'UTC'
+                });
+                const icsContent = generateICS({
+                    title,
+                    start,
+                    end,
+                    description: description || `School tour at ${school?.name || 'our school'}. ${description || ''}`,
+                    location: school?.address || ''
+                });
+                await sendEmail(schoolId, {
+                    to: parentEmail,
+                    subject: `Calendar invite: ${title} – ${school?.name || 'School'}`,
+                    text: `Your school tour is confirmed for ${tourDateStr}. Please find the calendar invite attached – add it to your calendar to receive reminders.\n\nWe look forward to seeing you!`,
+                    attachments: [{ filename: 'invite.ics', content: icsContent }]
+                });
+                console.log('[Webhook Booking] Calendar invite email sent to parent:', parentEmail);
+            } catch (err) {
+                console.error('[Webhook Booking] Error sending calendar invite to parent:', err.message);
+            }
+        }
 
         console.log(`[Webhook Booking] Tour booking created successfully!`);
         console.log(`[Webhook Booking] Tour Booking ID: ${tourBooking._id}`);

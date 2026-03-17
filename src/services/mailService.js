@@ -23,10 +23,10 @@ function createGoogleOAuthClient() {
  * 3. Fallback to System SMTP
  * 
  * @param {string} schoolId - MongoDB ObjectId
- * @param {object} opts - { to, subject, text, html }
+ * @param {object} opts - { to, subject, text, html, attachments?: [{ filename, content }] }
  */
 async function sendEmail(schoolId, opts) {
-    const { to, subject, text, html } = opts;
+    const { to, subject, text, html, attachments } = opts;
     
     try {
         const integrations = await Integration.find({ schoolId, connected: true }).lean();
@@ -61,7 +61,7 @@ async function sendEmail(schoolId, opts) {
     }
 }
 
-async function sendViaGmail(integration, { to, subject, text, html }) {
+async function sendViaGmail(integration, { to, subject, text, html, attachments }) {
     const oauth2Client = createGoogleOAuthClient();
     const tokens = integration.config.tokens;
     oauth2Client.setCredentials(tokens);
@@ -75,19 +75,52 @@ async function sendViaGmail(integration, { to, subject, text, html }) {
     });
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    
-    // Create RFC 2822 formatted email
     const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
-    const messageParts = [
-        `To: ${to}`,
-        'Content-Type: text/html; charset=utf-8',
-        'MIME-Version: 1.0',
-        `Subject: ${utf8Subject}`,
-        '',
-        html || text.replace(/\n/g, '<br>')
-    ];
-    const message = messageParts.join('\n');
-    const encodedMessage = Buffer.from(message)
+    const bodyContent = html || text.replace(/\n/g, '<br>');
+
+    let rawMessage;
+    if (attachments && attachments.length > 0) {
+        const boundary = `boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const bodyPart = [
+            `Content-Type: text/html; charset=utf-8`,
+            'Content-Transfer-Encoding: base64',
+            '',
+            Buffer.from(bodyContent).toString('base64')
+        ].join('\r\n');
+        const attachmentParts = attachments.map(att => {
+            const content = typeof att.content === 'string' ? att.content : (att.content || '').toString();
+            return [
+                `Content-Type: application/ics; name="${(att.filename || 'invite.ics').replace(/"/g, '')}"`,
+                'Content-Transfer-Encoding: base64',
+                'Content-Disposition: attachment',
+                '',
+                Buffer.from(content).toString('base64')
+            ].join('\r\n');
+        });
+        rawMessage = [
+            `To: ${to}`,
+            'MIME-Version: 1.0',
+            `Subject: ${utf8Subject}`,
+            `Content-Type: multipart/mixed; boundary="${boundary}"`,
+            '',
+            `--${boundary}`,
+            bodyPart,
+            `--${boundary}`,
+            attachmentParts.join(`\r\n--${boundary}\r\n`),
+            `--${boundary}--`
+        ].join('\r\n');
+    } else {
+        rawMessage = [
+            `To: ${to}`,
+            'Content-Type: text/html; charset=utf-8',
+            'MIME-Version: 1.0',
+            `Subject: ${utf8Subject}`,
+            '',
+            bodyContent
+        ].join('\r\n');
+    }
+
+    const encodedMessage = Buffer.from(rawMessage)
         .toString('base64')
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
@@ -97,30 +130,37 @@ async function sendViaGmail(integration, { to, subject, text, html }) {
         userId: 'me',
         requestBody: { raw: encodedMessage }
     });
-    
+
     console.log('[MailService] Email sent via Gmail API:', res.data.id);
     return { success: true, method: 'gmail', messageId: res.data.id };
 }
 
-async function sendViaOutlook(integration, { to, subject, text, html }) {
+async function sendViaOutlook(integration, { to, subject, text, html, attachments }) {
     const accessToken = integration.config.accessToken;
-    
-    const emailData = {
-        message: {
-            subject: subject,
-            body: {
-                contentType: html ? 'HTML' : 'Text',
-                content: html || text
-            },
-            toRecipients: [
-                { emailAddress: { address: to } }
-            ]
-        }
+    const message = {
+        subject: subject,
+        body: {
+            contentType: html ? 'HTML' : 'Text',
+            content: html || text
+        },
+        toRecipients: [
+            { emailAddress: { address: to } }
+        ]
     };
-
+    if (attachments && attachments.length > 0) {
+        message.attachments = attachments.map(att => {
+            const content = typeof att.content === 'string' ? att.content : (att.content || '').toString();
+            return {
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: att.filename || 'invite.ics',
+                contentType: 'text/calendar',
+                contentBytes: Buffer.from(content).toString('base64')
+            };
+        });
+    }
     const res = await axios.post(
         'https://graph.microsoft.com/v1.0/me/sendMail',
-        emailData,
+        { message },
         { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
     );
 
@@ -128,7 +168,7 @@ async function sendViaOutlook(integration, { to, subject, text, html }) {
     return { success: true, method: 'outlook' };
 }
 
-async function sendViaSMTP({ to, subject, text, html }) {
+async function sendViaSMTP({ to, subject, text, html, attachments }) {
     const host = process.env.SMTP_HOST;
     const port = process.env.SMTP_PORT || 587;
     const user = process.env.SMTP_USER;
@@ -146,13 +186,14 @@ async function sendViaSMTP({ to, subject, text, html }) {
         auth: { user, pass },
     });
 
-    const info = await transporter.sendMail({
-        from,
-        to,
-        subject,
-        text,
-        html
-    });
+    const mailOpts = { from, to, subject, text, html };
+    if (attachments && attachments.length > 0) {
+        mailOpts.attachments = attachments.map(att => ({
+            filename: att.filename || 'invite.ics',
+            content: typeof att.content === 'string' ? att.content : (att.content || '')
+        }));
+    }
+    const info = await transporter.sendMail(mailOpts);
 
     console.log('[MailService] Email sent via SMTP:', info.messageId);
     return { success: true, method: 'smtp', messageId: info.messageId };
