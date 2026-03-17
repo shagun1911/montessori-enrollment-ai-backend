@@ -34,13 +34,15 @@ async function generateTranscriptSummary(transcriptArray) {
             return null;
         }
 
-        const prompt = `You are analyzing a phone call transcript between a school enrollment AI agent and a parent interested in enrolling their child. 
+        const prompt = `You are summarizing a real phone call transcript between a school enrollment AI agent and a caller (usually a parent or guardian). Your summary will be used by school staff to quickly understand what happened on the call.
 
-Please provide a concise summary (2-3 sentences) of the key points discussed in this call. Focus on:
-- The parent's main inquiry or interest
-- Any specific questions asked
-- Information provided by the agent
-- Next steps or follow-up actions mentioned
+Rules:
+- Base your summary ONLY on what is explicitly stated or clearly implied in the transcript. Do not invent names, dates, or facts.
+- Identify the caller's main reason for calling and any specific requests (tour, info, enrollment, callback).
+- Note concrete details mentioned: caller/child name, child age or grade, program of interest, preferred times, or contact details.
+- Note what the agent offered or agreed to: information given, tour scheduled, follow-up promised, etc.
+- If the transcript is short, unclear, or mostly greetings, say so briefly instead of guessing.
+- Write in past tense, 3–5 clear sentences. Use neutral, professional language.
 
 Transcript:
 ${transcriptText}
@@ -57,8 +59,8 @@ Summary:`;
                         content: prompt
                     }
                 ],
-                max_tokens: 200,
-                temperature: 0.7
+                max_tokens: 350,
+                temperature: 0.3
             },
             {
                 headers: {
