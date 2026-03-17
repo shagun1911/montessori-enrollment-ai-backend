@@ -16,6 +16,59 @@ const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
 
+const APPOINTMENT_AGENT_PROMPT = `
+You are a strict, efficient appointment scheduling agent.
+You have access to system capabilities that:
+•  Provide the current date and time.
+•  Check available slots and complete booking for a given date.
+-----------------------------------
+🚨 STRICT EXECUTION RULES
+-----------------------------------
+1. ALWAYS fetch the current date and time FIRST.
+   - Do NOT assume today's date.
+   - Do NOT skip this step.
+2. If the user provides a relative day (e.g., Monday, Thursday, tomorrow):
+   - Convert it into an EXACT DATE using the current date.
+3. Date Conversion Logic:
+   - Calculate the difference between today's day and the target day.
+   - If the target day is ahead → pick the nearest upcoming date.
+   - If the target day is today → ASK:
+       "Do you want to book for today or next week?"
+   - If the target day has already passed → pick the same day next week.
+4. Once the EXACT DATE is determined:
+   - Immediately check available slots for that date.
+   - Do not ask the user again for the date.
+5. Booking Logic:
+   - If slots are available → proceed with booking.
+   - If slots are NOT available → inform the user:
+       "Slots are already booked for this day. Please choose another date."
+6. Final Confirmation:
+   - Only respond with a clear confirmation:
+     "Your appointment is booked for Thursday, March 19, 2026 at 3 PM."
+7. Keep responses SHORT, DIRECT, and ACTION-ORIENTED.
+-----------------------------------
+🧠 WORKFLOW EXAMPLE
+-----------------------------------
+User: "Book a slot for Thursday"
+Step 1 → Fetch current date and time  
+→ Example: Tuesday, March 17, 2026  
+Step 2 → Convert:
+Thursday → March 19, 2026  
+Step 3 → Check slot availability for March 19, 2026  
+Step 4:
+•  If available → Book and confirm  
+•  If not available → Ask user to choose another date  
+-----------------------------------
+⚠️ IMPORTANT BEHAVIOR
+-----------------------------------
+•  DO NOT explain internal calculations.
+•  DO NOT mention system processes or tools.
+•  DO NOT delay actions.
+•  DO NOT hallucinate dates.
+•  ALWAYS convert relative dates to exact dates before proceeding.
+-----------------------------------
+`;
+
 const router = express.Router();
 
 // Apply auth middleware to all school routes
@@ -26,7 +79,7 @@ function formatQAPairsForKB(qaPairs) {
     if (!Array.isArray(qaPairs) || qaPairs.length === 0) {
         return '';
     }
-    
+
     return qaPairs
         .filter(pair => pair.question && pair.answer)
         .map((pair, index) => {
@@ -38,18 +91,18 @@ function formatQAPairsForKB(qaPairs) {
 // Helper function to delete a knowledge base document from ElevenLabs
 async function deleteKnowledgeBaseDocument(documentId) {
     if (!documentId) return;
-    
+
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
         console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB delete');
         return;
     }
-    
+
     try {
         const url = `${baseUrl}/api/v1/knowledge-base/${documentId}`;
         console.log(`[KB DELETE] Request URL: ${url}`);
         console.log(`[KB DELETE] Document ID: ${documentId}`);
-        
+
         const response = await axios.delete(url);
         console.log(`[KB DELETE] Response Status: ${response.status}`);
         console.log(`[KB DELETE] Response Data:`, JSON.stringify(response.data, null, 2));
@@ -83,20 +136,20 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
 
     try {
         const url = `${baseUrl}/api/v1/agents/${agentId}`;
-        
+
         const payload = {
             conversation_config: {
                 agent: {
                     first_message: firstMessage || '',
                     language: 'en',
                     prompt: {
-                        prompt: systemPrompt || ''
+                        prompt: `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`
                     }
                 }
             },
             knowledge_base_ids: [knowledgeBaseId]
         };
-        
+
         console.log(`[Agent PATCH] Request URL: ${url}`);
         console.log(`[Agent PATCH] Agent ID: ${agentId}`);
         console.log(`[Agent PATCH] Request Payload:`, JSON.stringify({
@@ -115,13 +168,13 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         console.log(`[Agent PATCH] Full first_message length: ${(firstMessage || '').length} characters`);
         console.log(`[Agent PATCH] Full system_prompt length: ${(systemPrompt || '').length} characters`);
         console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId}`);
-        
+
         const response = await axios.patch(url, payload, {
             headers: {
                 'Content-Type': 'application/json'
             }
         });
-        
+
         console.log(`[Agent PATCH] Response Status: ${response.status}`);
         console.log(`[Agent PATCH] Response Data:`, JSON.stringify(response.data, null, 2));
         console.log(`[Agent PATCH] Successfully updated agent with knowledge base`);
@@ -142,20 +195,20 @@ async function ingestKnowledgeBaseDocument(text, schoolName) {
         console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB ingestion');
         return null;
     }
-    
+
     try {
         const url = `${baseUrl}/api/v1/knowledge-base/ingest`;
-        
+
         // Generate document name on backend
         const documentName = `${schoolName} - Knowledge Base`;
-        
+
         // Create FormData
         const formData = new FormData();
         formData.append('source_type', 'text');
         formData.append('text', text);
         formData.append('name', documentName);
         // parent_folder_id is optional, so we don't append it if null
-        
+
         console.log(`[KB POST] Request URL: ${url}`);
         console.log(`[KB POST] FormData Payload:`);
         console.log(`[KB POST]   - source_type: text`);
@@ -164,16 +217,16 @@ async function ingestKnowledgeBaseDocument(text, schoolName) {
         console.log(`[KB POST]   - text preview (first 200 chars): ${text.substring(0, 200)}${text.length > 200 ? '...' : ''}`);
         console.log(`[KB POST]   - text preview (last 200 chars): ${text.length > 200 ? '...' + text.substring(text.length - 200) : text}`);
         console.log(`[KB POST] FormData Headers:`, formData.getHeaders());
-        
+
         const response = await axios.post(url, formData, {
             headers: {
                 ...formData.getHeaders()
             }
         });
-        
+
         console.log(`[KB POST] Response Status: ${response.status}`);
         console.log(`[KB POST] Response Data:`, JSON.stringify(response.data, null, 2));
-        
+
         const documentId = response.data?.document_id || response.data?.id;
         console.log(`[KB] Successfully ingested document: ${documentId}`);
         return documentId;
@@ -204,12 +257,12 @@ router.get('/dashboard', async (req, res) => {
             type: 'Email',
             leadName: 'Admin Notification'
         };
-        
+
         const adminEmails = await Followup.find(adminEmailQuery)
             .sort({ createdAt: -1 })
             .limit(20)
             .lean();
-        
+
         adminEmailNotifications = adminEmails.map(email => ({
             id: email._id.toString(),
             recipient: email.recipient,
@@ -229,7 +282,7 @@ router.get('/dashboard', async (req, res) => {
         const schoolAiNumber = normalizePhone(school?.aiNumber || '');
         const userToken = req.headers.authorization?.split(' ')[1] || '';
         const backendUrl = `${req.protocol}://${req.get('host')}`;
-        
+
         // ── STEP 1: Fetch VoiceAI Logs (SIP) ──────────
         let voiceAiCalls = [];
         if (schoolAiNumber) {
@@ -270,7 +323,7 @@ router.get('/dashboard', async (req, res) => {
             type: 'post_call_transcription',
             $or: [
                 { schoolId: schoolObjectId },
-                { 
+                {
                     'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' },
                 },
                 {
@@ -280,16 +333,16 @@ router.get('/dashboard', async (req, res) => {
         }).sort({ received_at: -1 }).limit(500).lean();
 
         const webhookCalls = schoolWebhooks.map(wh => {
-            const callTimestamp = wh.metadata?.start_time_unix_secs 
-                ? new Date(wh.metadata.start_time_unix_secs * 1000) 
+            const callTimestamp = wh.metadata?.start_time_unix_secs
+                ? new Date(wh.metadata.start_time_unix_secs * 1000)
                 : wh.received_at;
-            
+
             return {
                 id: wh._id.toString(),
                 conversationId: wh.conversation_id,
-                callerPhone: wh.metadata?.phone_call?.from_number 
-                    || wh.tour_booking_extracted?.phone 
-                    || wh.user_id 
+                callerPhone: wh.metadata?.phone_call?.from_number
+                    || wh.tour_booking_extracted?.phone
+                    || wh.user_id
                     || 'Web Widget',
                 callerName: wh.tour_booking_extracted?.name || 'Parent',
                 duration: wh.metadata?.call_duration_secs || wh.metadata?.phone_call?.call_duration_secs || 0,
@@ -305,7 +358,7 @@ router.get('/dashboard', async (req, res) => {
 
         // ── STEP 3: Merge and Deduplicate ──────────
         const allCallsMap = new Map();
-        
+
         // Add VoiceAI base (usually more reliable for duration/SIP)
         voiceAiCalls.forEach(c => {
             const key = `${normalizePhone(c.callerPhone)}_${new Date(c.timestamp).getTime()}`;
@@ -323,7 +376,7 @@ router.get('/dashboard', async (req, res) => {
             }
         });
 
-        const calls = Array.from(allCallsMap.values()).sort((a, b) => 
+        const calls = Array.from(allCallsMap.values()).sort((a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
@@ -331,7 +384,7 @@ router.get('/dashboard', async (req, res) => {
         const totalCalls = calls.length;
         const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
         const callMinutes = Math.floor(totalDurationSeconds / 60);
-        
+
         // Ensure toursBooked is accurate - count from TourBooking collection
         const actualToursBooked = await TourBooking.countDocuments({ schoolId });
 
@@ -357,20 +410,24 @@ router.get('/dashboard', async (req, res) => {
             });
         }
 
-        const recentCalls = calls.slice(0, 10).map(c => ({
-            id: c.id,
-            conversationId: c.conversationId || null,
-            callerName: c.callerName,
-            callerPhone: c.callerPhone,
-            callType: c.callType,
-            duration: Math.round(c.duration),
-            timestamp: c.timestamp,
-            recordingUrl: c.recordingUrl,
-            summary: c.summary || '',
-            tourBookingDetected: c.tourBookingDetected || false,
-            tourBookingDate: c.tourBookingDate || null,
-            aiProcessed: c.aiProcessed || false
-        }));
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const recentCalls = calls
+            .filter(c => new Date(c.timestamp) >= oneDayAgo)
+            .slice(0, 10)
+            .map(c => ({
+                id: c.id,
+                conversationId: c.conversationId || null,
+                callerName: c.callerName,
+                callerPhone: c.callerPhone,
+                callType: c.callType,
+                duration: Math.round(c.duration),
+                timestamp: c.timestamp,
+                recordingUrl: c.recordingUrl,
+                summary: c.summary || '',
+                tourBookingDetected: c.tourBookingDetected || false,
+                tourBookingDate: c.tourBookingDate || null,
+                aiProcessed: c.aiProcessed || false
+            }));
 
         res.json({
             metrics: [
@@ -401,7 +458,7 @@ router.get('/call-logs', async (req, res) => {
 
         const userToken = req.headers.authorization?.split(' ')[1] || '';
         const backendUrl = `${req.protocol}://${req.get('host')}`;
-        
+
         // Helper to normalize phones
         const normalizePhone = (phone) => {
             if (!phone) return '';
@@ -545,9 +602,9 @@ router.get('/calls/:conversationId/audio', async (req, res) => {
             const school = await School.findById(schoolId).select('aiNumber elevenlabsAgentId').lean();
             const normalizedSchoolNum = school.aiNumber ? school.aiNumber.replace(/\D/g, '') : '';
             const whToNum = audioWebhook.metadata?.phone_call?.to_number ? audioWebhook.metadata.phone_call.to_number.replace(/\D/g, '') : '';
-            
-            if (audioWebhook.schoolId 
-                || (normalizedSchoolNum && whToNum.includes(normalizedSchoolNum)) 
+
+            if (audioWebhook.schoolId
+                || (normalizedSchoolNum && whToNum.includes(normalizedSchoolNum))
                 || (school.elevenlabsAgentId && audioWebhook.agent_id === school.elevenlabsAgentId)) {
                 console.log(`[Audio] Serving from cache: ${conversationId}`);
                 const audioBuffer = Buffer.from(audioWebhook.audio_base64, 'base64');
@@ -763,7 +820,7 @@ router.put('/settings', async (req, res) => {
         if (name !== undefined) school.name = name;
         if (address !== undefined) school.address = address;
         if (timezone !== undefined) school.timezone = timezone;
-        
+
         // Auto-correct timezone based on address ONLY if timezone wasn't manually provided
         if (address !== undefined && address !== school.address && timezone === undefined) {
             const { getTimezoneFromAddress } = require('../utils/timezone');
@@ -798,7 +855,7 @@ router.put('/settings', async (req, res) => {
                 question: p.question || '',
                 answer: p.answer || ''
             }));
-            
+
             // Compare old and new qaPairs to detect changes
             const oldQAPairs = school.qaPairs || [];
             if (oldQAPairs.length !== newQAPairs.length) {
@@ -813,7 +870,7 @@ router.put('/settings', async (req, res) => {
                     }
                 }
             }
-            
+
             // Update qaPairs
             school.qaPairs.splice(0, school.qaPairs.length, ...newQAPairs);
             console.log('[PUT /settings] qaPairs set on document:', school.qaPairs.length);
@@ -827,24 +884,24 @@ router.put('/settings', async (req, res) => {
                     await deleteKnowledgeBaseDocument(school.knowledgeBaseDocumentId);
                     school.knowledgeBaseDocumentId = ''; // Clear the document_id
                 }
-                
+
                 // Step 2: Create new KB document only if there are Q&A pairs
                 if (qaPairs.length > 0) {
                     const kbText = formatQAPairsForKB(school.qaPairs);
                     if (kbText) { // Only create if we have valid text
                         // Pass school name to generate document name on backend
                         const newDocumentId = await ingestKnowledgeBaseDocument(kbText, school.name);
-                        
+
                         // Step 3: Store the new document_id
                         if (newDocumentId) {
                             school.knowledgeBaseDocumentId = newDocumentId;
                             console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
-                            
+
                             // Step 4: Update agent with knowledge base ID
                             const agentId = process.env.AGENT_ID;
                             const firstMessage = school.script || '';
                             const systemPrompt = school.systemPrompt || '';
-                            
+
                             if (agentId) {
                                 try {
                                     await updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, newDocumentId);

@@ -227,7 +227,7 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
  * @returns {Promise<{ success: boolean, eventId?: string, provider?: 'google'|'outlook', error?: string }>}
  */
 async function createCalendarEvent(schoolId, opts) {
-    const { title, startDateTime, endDateTime, description } = opts;
+    const { title, startDateTime, endDateTime, description, parentEmail } = opts;
     const start = startDateTime instanceof Date ? startDateTime : new Date(startDateTime);
     const end = endDateTime instanceof Date ? endDateTime : new Date(endDateTime);
 
@@ -305,9 +305,9 @@ async function createCalendarEvent(schoolId, opts) {
     for (const integration of integrations) {
         let result;
         if (integration.type === 'google') {
-            result = await createGoogleCalendarEvent(integration, { title, start, end, description });
+            result = await createGoogleCalendarEvent(integration, { title, start, end, description, parentEmail });
         } else if (integration.type === 'outlook') {
-            result = await createOutlookCalendarEvent(integration, { title, start, end, description });
+            result = await createOutlookCalendarEvent(integration, { title, start, end, description, parentEmail });
         }
 
         if (result && result.success) {
@@ -328,7 +328,7 @@ async function createCalendarEvent(schoolId, opts) {
     }
 }
 
-async function createGoogleCalendarEvent(integration, { title, start, end, description }) {
+async function createGoogleCalendarEvent(integration, { title, start, end, description, parentEmail }) {
     try {
         const oauth2Client = createGoogleOAuthClient();
         const tokens = integration.config?.tokens;
@@ -352,6 +352,7 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
             description: description || '',
             start: { dateTime: start.toISOString() },
             end: { dateTime: end.toISOString() },
+            attendees: parentEmail ? [{ email: parentEmail }] : [],
         };
         const res = await calendar.events.insert({
             calendarId: 'primary',
@@ -366,7 +367,7 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
     }
 }
 
-async function createOutlookCalendarEvent(integration, { title, start, end, description }) {
+async function createOutlookCalendarEvent(integration, { title, start, end, description, parentEmail }) {
     try {
         const accessToken = integration.config?.accessToken;
         if (!accessToken) {
@@ -378,6 +379,9 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
             body: { contentType: 'text', content: description || '' },
             start: { dateTime: fmtDate(start), timeZone: 'UTC' },
             end: { dateTime: fmtDate(end), timeZone: 'UTC' },
+            attendees: parentEmail ? [
+                { emailAddress: { address: parentEmail }, type: 'required' }
+            ] : []
         };
         const res = await axios.post(
             'https://graph.microsoft.com/v1.0/me/events',

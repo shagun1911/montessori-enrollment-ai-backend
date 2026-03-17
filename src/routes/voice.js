@@ -5,6 +5,7 @@ const School = require('../models/School');
 const TourBooking = require('../models/TourBooking');
 const { triggerAutomation } = require('../services/automation');
 const { createCalendarEvent, getFreeSlots, isSlotAvailable, getBusySlots } = require('../services/calendarService');
+const { sendEmail } = require('../services/mailService');
 
 const router = express.Router();
 
@@ -189,10 +190,15 @@ router.post('/incoming', (req, res) => {
 // POST /api/voice/call-end - Called by AI agent when call completes
 router.post('/call-end', async (req, res) => {
     try {
-        const { schoolId, callerName, callerPhone, callType, duration, recordingUrl, leadData } = req.body;
+        const { schoolId, callerName, callerPhone, callType, duration, recordingUrl, leadData, summary } = req.body;
 
         if (!schoolId) {
             return res.status(400).json({ error: 'schoolId is required' });
+        }
+
+        const school = await School.findById(schoolId).select('name adminEmail twilioPhoneNumber twilioSid twilioAuthToken smsAutoFollowup emailAutoFollowup smsTemplate emailTemplate').lean();
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
         }
 
         const callLog = await CallLog.create({
@@ -236,13 +242,13 @@ router.post('/call-end', async (req, res) => {
                     if (!available) {
                         tourError = slotError || 'That time is no longer available or overlaps an existing event.';
                     } else {
-                        const school = await School.findById(schoolId).select('name').lean();
                         const title = `School Tour – ${parentName || 'Parent'}`;
                         const calResult = await createCalendarEvent(schoolId, {
                             title,
                             startDateTime: start,
                             endDateTime: end,
                             description: `Tour for ${parentName || 'Parent'}. Phone: ${phone || 'N/A'}. Email: ${email || 'N/A'}. Reason: ${reason || 'Inquiry'}.`,
+                            parentEmail: email || null,
                         });
                         tourBooking = await TourBooking.create({
                             schoolId,
@@ -263,6 +269,36 @@ router.post('/call-end', async (req, res) => {
             }
         }
 
+        // Send Admin Summary Email
+        if (school && school.adminEmail) {
+            const summaryTitle = tourBooking ? `🎉 Tour Booked: ${parentName || 'New Parent'}` : `📞 New Call Summary: ${parentName || 'Parent'}`;
+            const summaryBody = `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; border: 1px solid #eee; padding: 20px; border-radius: 12px;">
+                    <h2 style="color: #2563eb; margin-top: 0;">Call Processed Successfully</h2>
+                    <p><strong>Caller:</strong> ${parentName || 'Parent'} (${phone || 'N/A'})</p>
+                    <p><strong>Contact Info:</strong> ${email || 'N/A'}</p>
+                    <p><strong>AI Summary:</strong></p>
+                    <blockquote style="background: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px; margin: 0; font-style: italic;">
+                        "${summary || 'No summary available.'}"
+                    </blockquote>
+                    ${tourBooking ? `
+                        <div style="margin-top: 20px; padding: 15px; background: #ecfdf5; border: 1px solid #10b981; border-radius: 8px;">
+                            <p style="color: #047857; font-weight: bold; margin: 0;">✅ Tour scheduled for: ${new Date(tourScheduledAt).toLocaleString()}</p>
+                        </div>
+                    ` : '<p style="margin-top: 20px; color: #64748b;">No tour was scheduled during this call.</p>'}
+                    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+                    <p style="font-size: 12px; color: #94a3b8;">This is an automated notification from your Enrollment AI Assistant at ${school.name || 'our school'}.</p>
+                </div>
+            `;
+            
+            sendEmail(schoolId, {
+                to: school.adminEmail,
+                subject: summaryTitle,
+                text: `New call from ${parentName || 'Parent'}. Summary: ${summary || 'None'}`,
+                html: summaryBody
+            }).catch(err => console.error('[Admin Notification] Failed to send email:', err.message));
+        }
+
         res.json({
             success: true,
             callLogId: callLog._id,
@@ -270,6 +306,7 @@ router.post('/call-end', async (req, res) => {
             tourBooked: !!tourBooking,
             tourBookingId: tourBooking?._id?.toString(),
             tourError: tourError || undefined,
+            message: tourBooking ? 'Tour booked and invite sent' : 'Call summary processed'
         });
     } catch (err) {
         console.error('Voice call-end error:', err);

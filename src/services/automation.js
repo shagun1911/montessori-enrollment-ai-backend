@@ -1,5 +1,6 @@
 const School = require('../models/School');
 const Followup = require('../models/Followup');
+const { sendEmail } = require('./mailService');
 
 function getTwilioClient(sid, authToken) {
     try {
@@ -15,25 +16,7 @@ function getTwilioClient(sid, authToken) {
 
 
 
-function getEmailTransport() {
-    const host = process.env.SMTP_HOST;
-    const port = process.env.SMTP_PORT || 587;
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
-    const secure = process.env.SMTP_SECURE === 'true';
-    if (!host || !user || !pass) return null;
-    try {
-        const nodemailer = require('nodemailer');
-        return nodemailer.createTransport({
-            host,
-            port: Number(port),
-            secure,
-            auth: { user, pass },
-        });
-    } catch (e) {
-        return null;
-    }
-}
+// Email transport logic moved to mailService.js
 
 async function triggerAutomation(schoolId, leadData) {
     const result = { smsSent: false, emailSent: false, smsError: null, emailError: null };
@@ -101,27 +84,18 @@ async function triggerAutomation(schoolId, leadData) {
                 .replace(/\{form_link\}/g, formLink)
                 .replace(/\{child_age\}/g, childAge || 'any');
 
-            let status = 'pending';
-            const transport = getEmailTransport();
-            const from = process.env.MAIL_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@enrollmentai.com';
-
-            if (transport) {
-                try {
-                    await transport.sendMail({
-                        from,
-                        to: email,
-                        subject: `Follow-up from ${school.name}`,
-                        text: emailBody,
-                    });
-                    status = 'sent';
-                    result.emailSent = true;
-                } catch (err) {
-                    console.error('[Email Automation] Send error:', err.message);
-                    status = 'failed';
-                    result.emailError = err.message || 'Email send failed';
-                }
-            } else {
-                result.emailError = 'SMTP not configured in server .env (SMTP_HOST, SMTP_USER, SMTP_PASS).';
+            try {
+                await sendEmail(schoolId, {
+                    to: email,
+                    subject: `Follow-up from ${school.name}`,
+                    text: emailBody,
+                });
+                status = 'sent';
+                result.emailSent = true;
+            } catch (err) {
+                console.error('[Email Automation] Send error:', err.message);
+                status = 'failed';
+                result.emailError = err.message || 'Email send failed';
             }
 
             await Followup.create({
@@ -157,35 +131,29 @@ async function sendTourConfirmation(schoolId, tourBooking) {
 
         // 1. Send Confirmation Email
         if (email) {
-            const transport = getEmailTransport();
-            if (transport) {
-                const emailBody = (school.tourConfirmationEmailTemplate || '')
-                    .replace(/\{parent_name\}/g, parentName || 'Parent')
-                    .replace(/\{school_name\}/g, school.name)
-                    .replace(/\{tour_date\}/g, tourDateStr)
-                    .replace(/\{school_address\}/g, school.address || 'our campus');
+            const emailBody = (school.tourConfirmationEmailTemplate || '')
+                .replace(/\{parent_name\}/g, parentName || 'Parent')
+                .replace(/\{school_name\}/g, school.name)
+                .replace(/\{tour_date\}/g, tourDateStr)
+                .replace(/\{school_address\}/g, school.address || 'our campus');
 
-                const from = process.env.MAIL_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@enrollmentai.com';
+            try {
+                await sendEmail(schoolId, {
+                    to: email,
+                    subject: `Tour Confirmation: ${school.name}`,
+                    text: emailBody,
+                });
                 
-                try {
-                    await transport.sendMail({
-                        from,
-                        to: email,
-                        subject: `Tour Confirmation: ${school.name}`,
-                        text: emailBody,
-                    });
-                    
-                    await Followup.create({
-                        schoolId,
-                        leadName: parentName || 'Unknown',
-                        type: 'Email',
-                        status: 'sent',
-                        message: emailBody,
-                        recipient: email,
-                    });
-                } catch (err) {
-                    console.error('[Tour Confirmation Email] Error:', err.message);
-                }
+                await Followup.create({
+                    schoolId,
+                    leadName: parentName || 'Unknown',
+                    type: 'Email',
+                    status: 'sent',
+                    message: emailBody,
+                    recipient: email,
+                });
+            } catch (err) {
+                console.error('[Tour Confirmation Email] Error:', err.message);
             }
         }
 
