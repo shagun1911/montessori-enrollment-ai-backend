@@ -116,7 +116,38 @@ async function deleteKnowledgeBaseDocument(documentId) {
     }
 }
 
-// Helper function to update agent with knowledge base ID
+// PATCH agent with only knowledge_base_ids (used after questionnaire KB DELETE/POST)
+async function patchAgentKnowledgeBaseOnly(agentId, documentId) {
+    const baseUrl = process.env.ELEVENLABS_API_URL;
+    if (!baseUrl) {
+        console.warn('[Agent PATCH KB] ELEVENLABS_API_URL not configured, skipping');
+        return null;
+    }
+    if (!agentId) {
+        console.warn('[Agent PATCH KB] AGENT_ID not configured, skipping');
+        return null;
+    }
+    try {
+        const url = `${baseUrl}/api/v1/agents/${agentId}`;
+        const payload = {
+            knowledge_base_ids: documentId && documentId.trim() ? [documentId] : []
+        };
+        console.log('[Agent PATCH KB] PATCH', url, 'payload:', JSON.stringify(payload));
+        const response = await axios.patch(url, payload, {
+            headers: {
+                'accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
+        console.log('[Agent PATCH KB] Response', response.status, JSON.stringify(response.data));
+        return response.data;
+    } catch (err) {
+        console.error('[Agent PATCH KB] Failed:', err.response?.status, err.response?.data, err.message);
+        throw err;
+    }
+}
+
+// Helper function to update agent with knowledge base ID (full config: first_message, prompt, knowledge_base_ids)
 async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, knowledgeBaseId) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
@@ -927,27 +958,34 @@ router.put('/settings', async (req, res) => {
                             school.knowledgeBaseDocumentId = newDocumentId;
                             console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
 
-                            // Step 4: Update agent with knowledge base ID
-                            const agentId = process.env.AGENT_ID;
-                            const firstMessage = school.script || '';
-                            const systemPrompt = school.systemPrompt || '';
-
+                            // Step 4: PATCH agent with only knowledge_base_ids (document_id from DB, AGENT_ID from env)
+                            const agentId = process.env.AGENT_ID || null;
                             if (agentId) {
                                 try {
-                                    await updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, newDocumentId);
+                                    await patchAgentKnowledgeBaseOnly(agentId, newDocumentId);
                                     didUpdateAgentInKbSync = true;
-                                    console.log('[PUT /settings] Agent updated with knowledge base ID');
+                                    console.log('[PUT /settings] Agent KB updated (knowledge_base_ids only)');
                                 } catch (err) {
-                                    console.error('[PUT /settings] Failed to update agent, but KB document was created:', err);
-                                    // Continue even if agent update fails
+                                    console.error('[PUT /settings] Failed to PATCH agent KB, but KB document was created:', err);
                                 }
                             } else {
-                                console.warn('[PUT /settings] AGENT_ID not configured, skipping agent update');
+                                console.warn('[PUT /settings] AGENT_ID not set — skipping agent PATCH after KB sync');
                             }
                         }
                     }
                 } else {
+                    // All Q&A pairs removed: clear KB on agent (PATCH knowledge_base_ids: [])
                     console.log('[PUT /settings] All Q&A pairs removed, KB document deleted');
+                    school.knowledgeBaseDocumentId = '';
+                    const agentId = process.env.AGENT_ID || null;
+                    if (agentId && process.env.ELEVENLABS_API_URL) {
+                        try {
+                            await patchAgentKnowledgeBaseOnly(agentId, null);
+                            didUpdateAgentInKbSync = true;
+                        } catch (err) {
+                            console.error('[PUT /settings] Failed to clear agent KB:', err);
+                        }
+                    }
                 }
             } catch (err) {
                 console.error('[PUT /settings] KB sync failed:', err);
@@ -957,19 +995,26 @@ router.put('/settings', async (req, res) => {
 
         // When only first message and/or system prompt changed: PATCH agent (no KB DELETE/POST)
         if ((scriptChanged || systemPromptChanged) && !didUpdateAgentInKbSync) {
-            const agentId = process.env.AGENT_ID;
+            // Prefer school-specific agent ID when set; fall back to global AGENT_ID
+            const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
             if (agentId) {
-                try {
-                    await updateAgentWithKnowledgeBase(
-                        agentId,
-                        school.script || '',
-                        school.systemPrompt || '',
-                        school.knowledgeBaseDocumentId || ''
-                    );
-                    console.log('[PUT /settings] Agent updated (first message / system prompt only)');
-                } catch (err) {
-                    console.error('[PUT /settings] Failed to update agent with new script/prompt:', err);
+                if (!process.env.ELEVENLABS_API_URL) {
+                    console.warn('[PUT /settings] ELEVENLABS_API_URL not set — skipping agent PATCH (external API not called)');
+                } else {
+                    try {
+                        await updateAgentWithKnowledgeBase(
+                            agentId,
+                            school.script || '',
+                            school.systemPrompt || '',
+                            school.knowledgeBaseDocumentId || ''
+                        );
+                        console.log('[PUT /settings] Agent updated (first message / system prompt only)');
+                    } catch (err) {
+                        console.error('[PUT /settings] Failed to update agent with new script/prompt:', err);
+                    }
                 }
+            } else {
+                console.warn('[PUT /settings] No agent ID (school.elevenlabsAgentId or AGENT_ID) — skipping agent PATCH; external API not called');
             }
         }
 
