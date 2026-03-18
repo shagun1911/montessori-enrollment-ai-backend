@@ -46,6 +46,10 @@ async function getBusySlots(schoolId, startDate, endDate) {
     else if (preference === 'none') return { busySlots };
 
     const integrations = await Integration.find(integrationCriteria).lean();
+    const activeIntegrations = integrations.map(i => ({
+        type: i.type,
+        email: i.type === 'google' ? i.config?.userEmail : i.config?.account?.username
+    }));
 
     for (const integration of integrations) {
         if (integration.type === 'google') {
@@ -62,16 +66,46 @@ async function getBusySlots(schoolId, startDate, endDate) {
     const bookings = await TourBooking.find({
         schoolId,
         scheduledAt: { $gte: start, $lt: end },
-    }).select('scheduledAt').lean();
+    }).select('scheduledAt calendarProvider calendarEmail calendarEventId').lean();
 
     const blockMinutes = 15;
     bookings.forEach(b => {
-        const slotStart = new Date(b.scheduledAt);
-        const slotEnd = new Date(slotStart.getTime() + blockMinutes * 60 * 1000);
-        busySlots.push({ start: slotStart, end: slotEnd });
+        // GOLDEN FIX for isolation and duplicates:
+        // 1. If it has a calendarEventId, it's already on the calendar. Skip it.
+        if (b.calendarEventId) return;
+
+        const isInternal = !b.calendarProvider;
+        const matchingIntegration = activeIntegrations.find(ai => ai.type === b.calendarProvider);
+        
+        let shouldInclude = false;
+        if (isInternal) {
+            // Include internal bookings ONLY if no calendar is connected
+            if (activeIntegrations.length === 0) {
+                shouldInclude = true;
+            }
+        } else if (matchingIntegration && b.calendarEmail === matchingIntegration.email) {
+            shouldInclude = true;
+        }
+
+        if (shouldInclude) {
+            const slotStart = new Date(b.scheduledAt);
+            const slotEnd = new Date(slotStart.getTime() + blockMinutes * 60 * 1000);
+            busySlots.push({ start: slotStart, end: slotEnd });
+        }
     });
 
-    return { busySlots };
+    // Final de-duplication
+    const seen = new Set();
+    const uniqueBusySlots = [];
+    busySlots.forEach(s => {
+        const key = s.start.toISOString();
+        if (!seen.has(key)) {
+            uniqueBusySlots.push(s);
+            seen.add(key);
+        }
+    });
+
+    return { busySlots: uniqueBusySlots };
 }
 
 async function getGoogleBusySlots(integration, start, end) {
@@ -347,7 +381,13 @@ async function createCalendarEvent(schoolId, opts) {
     }
 
     if (overallSuccess) {
-        return { success: true, eventId: mainEventId, provider: mainProvider };
+        return { 
+            success: true, 
+            eventId: mainEventId, 
+            provider: mainProvider,
+            email: integrations.find(i => i.type === mainProvider)?.config?.userEmail || 
+                   integrations.find(i => i.type === mainProvider)?.config?.account?.username
+        };
     } else {
         return { success: false, error: errors.join(', ') || 'Failed to create calendar event' };
     }
@@ -395,7 +435,7 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
         const res = await calendar.events.insert(insertOptions);
         const eventId = res.data.id || '';
         console.log('[Calendar] Google event created:', eventId, parentEmail ? `(invite sent to ${parentEmail})` : '');
-        return { success: true, eventId, provider: 'google' };
+        return { success: true, eventId, provider: 'google', email: tokens.email || integration.config?.userEmail };
     } catch (err) {
         console.error('[Calendar] Google creation error:', err.message);
         return { success: false, error: err.message || 'Failed to create Google Calendar event' };
@@ -430,7 +470,7 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
             { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
         );
         const eventId = res.data.id || '';
-        return { success: true, eventId, provider: 'outlook' };
+        return { success: true, eventId, provider: 'outlook', email: integration.config?.account?.username };
     } catch (err) {
         const msg = err.response?.data?.error?.message || err.message;
         console.error('[Calendar] Outlook error:', msg);

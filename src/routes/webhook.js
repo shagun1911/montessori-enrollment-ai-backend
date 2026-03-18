@@ -536,6 +536,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             scheduledAt: start,
             calendarEventId: calResult.success ? calResult.eventId : '',
             calendarProvider: calResult.success ? calResult.provider : '',
+            calendarEmail: calResult.success ? calResult.email : '',
         });
 
         // Send confirmation communications (email + optional SMS)

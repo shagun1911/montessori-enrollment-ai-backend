@@ -260,6 +260,7 @@ router.post('/call-end', async (req, res) => {
                             scheduledAt: start,
                             calendarEventId: calResult.success ? calResult.eventId : '',
                             calendarProvider: calResult.success ? calResult.provider : '',
+                            calendarEmail: calResult.success ? calResult.email : '',
                             callLogId: callLog._id,
                         });
                     }

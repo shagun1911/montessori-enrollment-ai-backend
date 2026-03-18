@@ -196,6 +196,7 @@ router.post('/book-tour/:schoolId', async (req, res) => {
             scheduledAt: start,
             calendarEventId: calResult.success ? calResult.eventId : '',
             calendarProvider: calResult.success ? calResult.provider : '',
+            calendarEmail: calResult.success ? calResult.email : '',
         });
 
         res.status(201).json({
