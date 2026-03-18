@@ -15,6 +15,7 @@ const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
+const { getCallDurationSeconds } = require('../utils/webhookHelpers');
 
 const APPOINTMENT_AGENT_PROMPT = `You are a strict, efficient appointment scheduling agent. You have access to system capabilities that:
 - Provide the current date and time.
@@ -382,7 +383,7 @@ router.get('/dashboard', async (req, res) => {
                     || wh.user_id
                     || 'Web Widget',
                 callerName: wh.tour_booking_extracted?.name || 'Parent',
-                duration: wh.metadata?.call_duration_secs || wh.metadata?.phone_call?.call_duration_secs || 0,
+                duration: getCallDurationSeconds(wh),
                 timestamp: callTimestamp,
                 recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
                 callType: 'inquiry',
@@ -578,7 +579,7 @@ router.get('/call-logs', async (req, res) => {
                 transcript,
                 summary: wh.summary || '',
                 recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
-                duration: wh.metadata?.call_duration_secs || wh.metadata?.phone_call?.call_duration_secs || 0,
+                duration: getCallDurationSeconds(wh),
                 createdAt: wh.received_at
             };
         });

@@ -677,6 +677,8 @@ async function sendEmailViaGmail(schoolId, to, subject, text) {
     }
 }
 
+const { getCallDurationSeconds } = require('../utils/webhookHelpers');
+
 /**
  * Send email notification to admin when webhook is received and processed
  * @param {Object} webhook - The webhook document (with AI processing results)
@@ -743,8 +745,8 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             return;
         }
         
-        // Format call information
-        const callDuration = webhook.metadata?.phone_call?.call_duration_secs || 0;
+        // Format call information (duration from multiple possible payload locations)
+        const callDuration = getCallDurationSeconds(webhook);
         const callDurationMin = Math.floor(callDuration / 60);
         const callDurationSec = callDuration % 60;
         let callerNumber = webhook.metadata?.phone_call?.from_number 
