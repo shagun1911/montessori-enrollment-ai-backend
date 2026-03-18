@@ -747,7 +747,20 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         }
         
         // Format call information (duration from multiple possible payload locations)
-        const callDuration = getCallDurationSeconds(webhook);
+        // Transcription webhook often has no duration; duration usually comes in post_call_audio for same conversation
+        let callDuration = getCallDurationSeconds(webhook);
+        if (callDuration === 0 && webhook.conversation_id) {
+            const audioWebhook = await ElevenLabsWebhook.findOne({
+                conversation_id: webhook.conversation_id,
+                type: 'post_call_audio'
+            }).select('metadata raw_payload transcript').lean();
+            if (audioWebhook) {
+                callDuration = getCallDurationSeconds(audioWebhook);
+                if (callDuration > 0) {
+                    console.log(`[Webhook Email] Using duration ${callDuration}s from post_call_audio webhook for conversation ${webhook.conversation_id}`);
+                }
+            }
+        }
         const callDurationMin = Math.floor(callDuration / 60);
         const callDurationSec = callDuration % 60;
         let callerNumber = webhook.metadata?.phone_call?.from_number 
@@ -777,6 +790,7 @@ A new call has been received and processed for ${school.name}.
 
 Call Details:
 - Caller Name/Number: ${callerNumber}
+- Call Duration: ${callDurationMin} min ${callDurationSec} sec
 - Conversation ID: ${webhook.conversation_id}
 - Call Recording: ${backendUrl}/api/school/calls/${webhook.conversation_id}/audio?token=${notificationToken}
 
