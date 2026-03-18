@@ -211,47 +211,27 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
     const [y, m, d] = dateStr.split('-').map(Number);
     if (!y || !m || !d) return { freeSlots: [], error: 'Invalid date. Use YYYY-MM-DD.' };
 
-    // Determine school timezone for range calculations
     const School = require('../models/School');
-    const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd timezone').lean();
+    const school = await School.findById(schoolId).select('timezone').lean();
     const tz = school?.timezone || 'America/Chicago';
 
-    // Check if weekend in the school's local timezone
-    // Use Intl to get the local day of week for the school
-    const localDateForWeekend = new Date(`${dateStr}T12:00:00Z`);
-    const localDayOfWeek = parseInt(
-        new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend)
-            === 'Sun' ? '0' :
-        new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend)
-            === 'Sat' ? '6' : '1'
-    );
-    const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForWeekend);
+    // Weekend check in school's timezone
+    const localDateForDay = new Date(`${dateStr}T12:00:00Z`);
+    const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForDay);
     if (weekdayStr === 'Sun' || weekdayStr === 'Sat') {
         return { freeSlots: [], error: 'Weekend bookings are not allowed.' };
     }
 
-    const [startH, startM] = (school?.businessHoursStart || '09:00').split(':').map(Number);
-    const [endH, endM] = (school?.businessHoursEnd || '17:00').split(':').map(Number);
+    const [startH, startM] = (businessHours.start || '09:00').split(':').map(Number);
+    const [endH, endM] = (businessHours.end || '17:00').split(':').map(Number);
 
-    // Build the business hour range in the school's local timezone.
-    // We construct a local time string and parse it properly so UTC offset is respected.
     const toUtcFromLocal = (dateStr, hours, minutes, tz) => {
-        // Use Intl to figure out the UTC offset at that specific date/time in the school's tz
-        // Strategy: create an ambiguous ISO without tz, then find how JS interprets it vs local
         const localStr = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
-        // Parse as UTC, then determine offset for the school's timezone at that moment
         const guessUtc = new Date(localStr + 'Z');
-        // Get what 'hour' the school timezone sees at the guessed UTC time
-        const formatter = new Intl.DateTimeFormat('en-US', {
-            timeZone: tz,
-            hour: 'numeric',
-            minute: 'numeric',
-            hour12: false
-        });
+        const formatter = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: 'numeric', hour12: false });
         const parts = formatter.formatToParts(guessUtc);
         const actualH = parseInt(parts.find(p => p.type === 'hour').value);
         const actualM = parseInt(parts.find(p => p.type === 'minute').value);
-        // Calculate difference and apply correction
         const diffMs = ((hours - actualH) * 60 + (minutes - actualM)) * 60 * 1000;
         return new Date(guessUtc.getTime() + diffMs);
     };
@@ -264,11 +244,22 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
 
     const freeSlots = [];
     const blockMs = 15 * 60 * 1000;
+    const now = new Date();
+    
+    // Add a 15-min buffer if checking for today
+    const minTime = now.getTime() + (15 * 60 * 1000); 
+
     let slotStart = new Date(rangeStart);
     while (slotStart.getTime() + blockMs <= rangeEnd.getTime()) {
         const slotEnd = new Date(slotStart.getTime() + blockMs);
-        const overlaps = busySlots.some(b => slotStart < b.end && slotEnd > b.start);
-        if (!overlaps) {
+        
+        // Use the strict overlap check: any intersect with a busy slot blocks the interval
+        const isBooked = busySlots.some(b => slotStart < b.end && slotEnd > b.start);
+        
+        // Also skip slots in the past (if the date is today)
+        const isPast = slotStart.getTime() < minTime;
+
+        if (!isBooked && !isPast) {
             freeSlots.push({
                 start: slotStart.toISOString(),
                 end: slotEnd.toISOString(),
