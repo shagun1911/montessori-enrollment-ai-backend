@@ -212,4 +212,29 @@ function parseLocalDateTimeToUTC(dateTimeInput, timezone) {
     return new Date(guessUtc.getTime() + diffMinutes * 60 * 1000);
 }
 
-module.exports = { getTimezoneFromAddress, parseLocalDateTimeToUTC };
+/**
+ * Format a Date (UTC instant) as a local dateTime string in the given timezone, for calendar APIs.
+ * Returns e.g. "2025-03-18T16:00:00" (no Z) so Google/Outlook interpret it as that time in the given timezone.
+ *
+ * @param {Date} date - UTC instant
+ * @param {string} timezone - IANA timezone (e.g. 'Asia/Kolkata')
+ * @returns {string} RFC3339-like local time string (YYYY-MM-DDTHH:mm:ss)
+ */
+function formatInTimezone(date, timezone) {
+    if (!(date instanceof Date) || isNaN(date.getTime()) || !timezone) return '';
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const get = (type) => parts.find(p => p.type === type)?.value || '00';
+    return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`;
+}
+
+module.exports = { getTimezoneFromAddress, parseLocalDateTimeToUTC, formatInTimezone };

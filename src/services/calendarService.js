@@ -371,8 +371,9 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
             );
         });
 
-        // Fetch school timezone for this event
+        // Fetch school timezone and send local time (no Z) so school calendar shows same time as parent
         const School = require('../models/School');
+        const { formatInTimezone } = require('../utils/timezone');
         const school = await School.findById(integration.schoolId).select('timezone').lean();
         const tz = school?.timezone || 'America/Chicago';
 
@@ -380,8 +381,8 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
         const event = {
             summary: title,
             description: description || '',
-            start: { dateTime: start.toISOString(), timeZone: tz },
-            end: { dateTime: end.toISOString(), timeZone: tz },
+            start: { dateTime: formatInTimezone(start, tz), timeZone: tz },
+            end: { dateTime: formatInTimezone(end, tz), timeZone: tz },
             attendees: parentEmail ? [{ email: parentEmail }] : [],
         };
         const insertOptions = {
@@ -408,17 +409,17 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
             return { success: false, error: 'Outlook not authorized. Reconnect in Integrations.' };
         }
 
-        // Fetch school timezone
+        // Fetch school timezone and send local time so school calendar shows same time as parent
         const School = require('../models/School');
+        const { formatInTimezone } = require('../utils/timezone');
         const school = await School.findById(integration.schoolId).select('timezone').lean();
         const tz = school?.timezone || 'America/Chicago';
 
-        const fmtDate = (d) => d.toISOString().replace('Z', '').replace(/\.000$/, '');
         const event = {
             subject: title,
             body: { contentType: 'text', content: description || '' },
-            start: { dateTime: fmtDate(start), timeZone: tz },
-            end: { dateTime: fmtDate(end), timeZone: tz },
+            start: { dateTime: formatInTimezone(start, tz), timeZone: tz },
+            end: { dateTime: formatInTimezone(end, tz), timeZone: tz },
             attendees: parentEmail ? [
                 { emailAddress: { address: parentEmail }, type: 'required' }
             ] : []
