@@ -232,7 +232,7 @@ async function getBusinessHoursRange(schoolId, dateStr) {
 
     const School = require('../models/School');
     const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd timezone').lean();
-    const tz = school?.timezone || 'America/Chicago';
+    const tz = 'America/Chicago'; // Forced Global CST
     console.log(`[getBusinessHoursRange] schoolId=${schoolId}, tz=${tz}`);
 
     const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(new Date(`${dateStr}T12:00:00Z`));
@@ -427,7 +427,7 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
         const School = require('../models/School');
         const { formatInTimezone } = require('../utils/timezone');
         const school = await School.findById(integration.schoolId).select('timezone').lean();
-        const tz = school?.timezone || 'America/Chicago';
+        const tz = 'America/Chicago'; // Forced Global CST
 
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
         const event = {
@@ -465,7 +465,7 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
         const School = require('../models/School');
         const { formatInTimezone } = require('../utils/timezone');
         const school = await School.findById(integration.schoolId).select('timezone').lean();
-        const tz = school?.timezone || 'America/Chicago';
+        const tz = 'America/Chicago'; // Forced Global CST
 
         const event = {
             subject: title,

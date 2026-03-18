@@ -455,7 +455,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         }
 
         const schoolForTz = await School.findById(schoolId).select('timezone').lean();
-        const schoolTz = schoolForTz?.timezone || 'America/Chicago';
+        const schoolTz = 'America/Chicago'; // Forced global CST
         console.log('[Webhook Booking] Using school timezone for tour time:', schoolTz, '| raw datetime from AI:', tourDate);
         const start = parseLocalDateTimeToUTC(tourDate, schoolTz) || new Date(tourDate);
         const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-minute slot

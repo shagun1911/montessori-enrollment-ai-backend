@@ -877,7 +877,7 @@ router.get('/settings', async (req, res) => {
             id: school._id.toString(),
             name: school.name,
             address: school.address || '',
-            timezone: school.timezone || 'America/Chicago',
+            timezone: 'America/Chicago', // Forced global CST
             aiNumber: school.aiNumber || '',
             routingNumber: school.routingNumber || '',
             escalationNumber: school.escalationNumber || '',

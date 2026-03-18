@@ -1,4 +1,5 @@
 require('dotenv').config();
+process.env.TZ = 'America/Chicago'; // Force global execution context to CST timezone
 const express = require('express');
 const cors = require('cors');
 const { connectDatabase, seedDatabase } = require('./src/database');
