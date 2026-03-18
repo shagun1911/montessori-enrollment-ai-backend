@@ -23,6 +23,10 @@ const router = express.Router();
  * No authentication required - called by ElevenLabs service
  */
 router.post('/elevenlabs', async (req, res) => {
+    const payload = req.body || {};
+    // Log synchronously so Render (and other PaaS) always show something when webhook is hit
+    console.log('[Webhook] Received POST type=', payload?.type || 'unknown', 'conversation_id=', payload?.data?.conversation_id || 'n/a');
+
     // Immediately acknowledge receipt with 200 OK
     res.status(200).json({ 
         status: 'received',
@@ -30,7 +34,7 @@ router.post('/elevenlabs', async (req, res) => {
     });
 
     // Process webhook asynchronously (after sending response)
-    processWebhookAsync(req.body).catch(err => {
+    processWebhookAsync(payload).catch(err => {
         console.error('[Webhook] Async processing error:', err);
     });
 });
@@ -40,11 +44,17 @@ router.post('/elevenlabs', async (req, res) => {
  */
 async function processWebhookAsync(payload) {
     try {
-        // Log all incoming webhook data
+        // Log summary only; full payload can be huge (transcript + base64 audio) and gets truncated/dropped on Render
+        const payloadData = payload?.data || {};
+        const payloadSummary = {
+            type: payload?.type,
+            conversation_id: payloadData.conversation_id,
+            transcript_length: Array.isArray(payloadData.transcript) ? payloadData.transcript.length : 0,
+            has_audio: Boolean(payloadData.full_audio),
+            metadata_keys: payloadData.metadata ? Object.keys(payloadData.metadata) : []
+        };
         console.log('[Webhook] ========================================');
-        console.log('[Webhook] Received webhook payload:');
-        console.log('[Webhook] Type:', payload?.type);
-        console.log('[Webhook] Full Payload:', JSON.stringify(payload, null, 2));
+        console.log('[Webhook] Processing payload:', JSON.stringify(payloadSummary));
         console.log('[Webhook] ========================================');
 
         if (!payload || !payload.type) {
