@@ -148,25 +148,15 @@ JSON Response:`;
         const bookingInfo = JSON.parse(content);
         console.log('[OpenAI] Tour booking extraction result:', bookingInfo);
 
-        // Convert to structured format
-        let tourBookingDate = null;
-        if (bookingInfo.tour_booked && bookingInfo.datetime) {
-            try {
-                tourBookingDate = new Date(bookingInfo.datetime);
-                // Validate date
-                if (isNaN(tourBookingDate.getTime())) {
-                    tourBookingDate = null;
-                }
-            } catch (e) {
-                console.warn('[OpenAI] Invalid datetime format:', bookingInfo.datetime);
-            }
-        }
+        // Keep raw datetime string so webhook can interpret it in school's timezone (e.g. "4 PM" as 16:00 school local, not UTC)
+        const datetimeRaw = bookingInfo.tour_booked && bookingInfo.datetime ? String(bookingInfo.datetime).trim() : null;
+        const datetimeValid = datetimeRaw && !isNaN(new Date(datetimeRaw).getTime());
 
         return {
             tour_booked: bookingInfo.tour_booked === true,
             date: bookingInfo.date || null,
             time: bookingInfo.time || null,
-            datetime: tourBookingDate,
+            datetime: datetimeValid ? datetimeRaw : null,
             notes: bookingInfo.notes || null,
             raw_response: bookingInfo
         };

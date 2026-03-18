@@ -164,4 +164,52 @@ async function getTimezoneFromAddress(address) {
     return null;
 }
 
-module.exports = { getTimezoneFromAddress };
+/**
+ * Parse a datetime string that is in a specific timezone (e.g. school local) and return a Date (UTC instant).
+ * Use when the AI or client sends "4 PM" as "2025-03-18T16:00:00" without Z — that is meant to be 4 PM in the school's timezone, not UTC.
+ * - If the string has 'Z' or ends with +/-HH:MM, it is parsed as-is (already an absolute instant).
+ * - Otherwise the string is interpreted as local time in the given IANA timezone.
+ *
+ * @param {string|Date} dateTimeInput - ISO-like string (e.g. "2025-03-18T16:00:00") or Date
+ * @param {string} timezone - IANA timezone (e.g. 'Asia/Kolkata', 'America/Chicago')
+ * @returns {Date|null} UTC instant or null if invalid
+ */
+function parseLocalDateTimeToUTC(dateTimeInput, timezone) {
+    if (!dateTimeInput || !timezone) return null;
+    if (dateTimeInput instanceof Date) {
+        return isNaN(dateTimeInput.getTime()) ? null : dateTimeInput;
+    }
+    const str = String(dateTimeInput).trim();
+    // Already has timezone info → parse as absolute instant
+    if (/Z$/.test(str) || /[+-]\d{2}:?\d{2}$/.test(str)) {
+        const d = new Date(str);
+        return isNaN(d.getTime()) ? null : d;
+    }
+    // Match YYYY-MM-DDTHH:mm or YYYY-MM-DDTHH:mm:ss[.sss]
+    const match = str.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/);
+    if (!match) return null;
+    const [, datePart, h, m, s] = match;
+    const targetHours = parseInt(h, 10);
+    const targetMinutes = parseInt(m, 10);
+    const targetSeconds = parseInt(s || '0', 10);
+    const ss = (s != null && s !== '') ? String(s).padStart(2, '0') : '00';
+    const localStr = `${datePart}T${h.padStart(2, '0')}:${m.padStart(2, '0')}:${ss}`;
+    const guessUtc = new Date(localStr + 'Z');
+    if (isNaN(guessUtc.getTime())) return null;
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+        hour12: false
+    });
+    const parts = formatter.formatToParts(guessUtc);
+    const get = (type) => parseInt(parts.find(p => p.type === type)?.value || '0', 10);
+    const actualH = get('hour');
+    const actualM = get('minute');
+    const actualS = get('second');
+    const diffMinutes = (targetHours - actualH) * 60 + (targetMinutes - actualM) + (targetSeconds - actualS) / 60;
+    return new Date(guessUtc.getTime() + diffMinutes * 60 * 1000);
+}
+
+module.exports = { getTimezoneFromAddress, parseLocalDateTimeToUTC };

@@ -11,6 +11,7 @@ const { processTranscript } = require('../services/openaiService');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
 const { sendEmail } = require('../services/mailService');
 const { generateICS } = require('../utils/ics');
+const { parseLocalDateTimeToUTC } = require('../utils/timezone');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
 
@@ -446,14 +447,16 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         const phone = parentInfo.phone || callerPhone || '';
         const parentName = parentInfo.parentName || 'Parent';
 
-        // Get tour booking date
+        // Get tour booking date — interpret as school local time if no timezone in string (fixes parent seeing wrong time)
         const tourDate = aiResult.tour_booking_date;
         if (!tourDate || isNaN(new Date(tourDate).getTime())) {
             console.warn('[Webhook Booking] Invalid tour booking date');
             return;
         }
 
-        const start = new Date(tourDate);
+        const schoolForTz = await School.findById(schoolId).select('timezone').lean();
+        const schoolTz = schoolForTz?.timezone || 'America/Chicago';
+        const start = parseLocalDateTimeToUTC(tourDate, schoolTz) || new Date(tourDate);
         const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-minute slot
 
         // Validate that the booking date is not in the past
