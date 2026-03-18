@@ -29,6 +29,7 @@ function createGoogleOAuthClient() {
 async function getBusySlots(schoolId, startDate, endDate) {
     const start = startDate instanceof Date ? startDate : new Date(startDate);
     const end = endDate instanceof Date ? endDate : new Date(endDate);
+    console.log(`[getBusySlots] schoolId=${schoolId}, start=${start.toISOString()}, end=${end.toISOString()}`);
     const busySlots = [];
 
     const School = require('../models/School');
@@ -201,6 +202,54 @@ async function isSlotAvailable(schoolId, start, end) {
 }
 
 /**
+ * Convert local time (dateStr + hours:minutes) in a timezone to UTC Date.
+ */
+function toUtcFromLocal(dateStr, hours, minutes, tz) {
+    const localStr = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+    const guessUtc = new Date(localStr + 'Z');
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false
+    });
+    const parts = formatter.formatToParts(guessUtc);
+    const actualH = parseInt(parts.find(p => p.type === 'hour').value);
+    const actualM = parseInt(parts.find(p => p.type === 'minute').value);
+    const diffMs = ((hours - actualH) * 60 + (minutes - actualM)) * 60 * 1000;
+    return new Date(guessUtc.getTime() + diffMs);
+}
+
+/**
+ * Get business-hours range (UTC) for a given date in the school's timezone.
+ * @param {string} schoolId
+ * @param {string} dateStr - YYYY-MM-DD
+ * @returns {Promise<{ rangeStart: Date, rangeEnd: Date, error?: string }>}
+ */
+async function getBusinessHoursRange(schoolId, dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    if (!y || !m || !d) return { rangeStart: null, rangeEnd: null, error: 'Invalid date. Use YYYY-MM-DD.' };
+
+    const School = require('../models/School');
+    const school = await School.findById(schoolId).select('businessHoursStart businessHoursEnd timezone').lean();
+    const tz = school?.timezone || 'America/Chicago';
+    console.log(`[getBusinessHoursRange] schoolId=${schoolId}, tz=${tz}`);
+
+    const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(new Date(`${dateStr}T12:00:00Z`));
+    if (weekdayStr === 'Sun' || weekdayStr === 'Sat') {
+        return { rangeStart: null, rangeEnd: null, error: 'Weekend bookings are not allowed.' };
+    }
+
+    const [startH, startM] = (school?.businessHoursStart || '09:00').split(':').map(Number);
+    const [endH, endM] = (school?.businessHoursEnd || '17:00').split(':').map(Number);
+
+    const rangeStart = toUtcFromLocal(dateStr, startH || 9, startM || 0, tz);
+    const rangeEnd = toUtcFromLocal(dateStr, endH || 17, endM || 0, tz);
+    console.log(`[getBusinessHoursRange] result: rangeStart=${rangeStart.toISOString()}, rangeEnd=${rangeEnd.toISOString()}`);
+    return { rangeStart, rangeEnd };
+}
+
+/**
  * Get free slots for a given day (business hours, 15-min blocks, excluding busy slots).
  * @param {string} schoolId
  * @param {string} dateStr - YYYY-MM-DD
@@ -208,36 +257,8 @@ async function isSlotAvailable(schoolId, start, end) {
  * @returns {Promise<{ freeSlots: Array<{ start: string, end: string }>, error?: string }>}
  */
 async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00', end: '17:00' }) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    if (!y || !m || !d) return { freeSlots: [], error: 'Invalid date. Use YYYY-MM-DD.' };
-
-    const School = require('../models/School');
-    const school = await School.findById(schoolId).select('timezone').lean();
-    const tz = school?.timezone || 'America/Chicago';
-
-    // Weekend check in school's timezone
-    const localDateForDay = new Date(`${dateStr}T12:00:00Z`);
-    const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(localDateForDay);
-    if (weekdayStr === 'Sun' || weekdayStr === 'Sat') {
-        return { freeSlots: [], error: 'Weekend bookings are not allowed.' };
-    }
-
-    const [startH, startM] = (businessHours.start || '09:00').split(':').map(Number);
-    const [endH, endM] = (businessHours.end || '17:00').split(':').map(Number);
-
-    const toUtcFromLocal = (dateStr, hours, minutes, tz) => {
-        const localStr = `${dateStr}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
-        const guessUtc = new Date(localStr + 'Z');
-        const formatter = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: 'numeric', hour12: false });
-        const parts = formatter.formatToParts(guessUtc);
-        const actualH = parseInt(parts.find(p => p.type === 'hour').value);
-        const actualM = parseInt(parts.find(p => p.type === 'minute').value);
-        const diffMs = ((hours - actualH) * 60 + (minutes - actualM)) * 60 * 1000;
-        return new Date(guessUtc.getTime() + diffMs);
-    };
-
-    const rangeStart = toUtcFromLocal(dateStr, startH || 9, startM || 0, tz);
-    const rangeEnd = toUtcFromLocal(dateStr, endH || 17, endM || 0, tz);
+    const { rangeStart, rangeEnd, error: rangeError } = await getBusinessHoursRange(schoolId, dateStr);
+    if (rangeError) return { freeSlots: [], error: rangeError };
 
     const { busySlots, error } = await getBusySlots(schoolId, rangeStart, rangeEnd);
     if (error) return { freeSlots: [], error };
@@ -469,4 +490,4 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
     }
 }
 
-module.exports = { createCalendarEvent, getBusySlots, getFreeSlots, isSlotAvailable };
+module.exports = { createCalendarEvent, getBusySlots, getFreeSlots, isSlotAvailable, getBusinessHoursRange };

@@ -34,7 +34,7 @@ function getGoogleAuthUrl(schoolId) {
             'https://www.googleapis.com/auth/gmail.send', // Gmail API scope for sending emails
         ],
         state: schoolId.toString(),
-        prompt: 'consent',
+        prompt: 'consent select_account',
     });
 }
 
@@ -62,6 +62,7 @@ async function getOutlookAuthUrl(schoolId) {
         scopes: ['user.read', 'calendars.readwrite', 'mail.send'],
         redirectUri: process.env.OUTLOOK_REDIRECT_URI,
         state: schoolId.toString(),
+        prompt: 'select_account',
     };
     return await pca.getAuthCodeUrl(authCodeUrlParameters);
 }

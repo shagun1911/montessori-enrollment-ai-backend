@@ -4,7 +4,7 @@ const CallLog = require('../models/CallLog');
 const School = require('../models/School');
 const TourBooking = require('../models/TourBooking');
 const { triggerAutomation } = require('../services/automation');
-const { createCalendarEvent, getFreeSlots, isSlotAvailable, getBusySlots } = require('../services/calendarService');
+const { createCalendarEvent, getFreeSlots, isSlotAvailable, getBusySlots, getBusinessHoursRange } = require('../services/calendarService');
 const { sendEmail } = require('../services/mailService');
 
 const router = express.Router();
@@ -127,27 +127,27 @@ router.get('/booked-slots', async (req, res) => {
         }
 
         // Calculate date range for the day
-        const start = new Date(`${date}T00:00:00.000Z`);
-        const end = new Date(`${date}T23:59:59.999Z`);
-
-        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-            return res.status(400).json({ error: 'Invalid date format' });
+        // Get business-specific UTC range for the date
+        const { rangeStart, rangeEnd, error: rangeError } = await getBusinessHoursRange(schoolId, date);
+        if (rangeError) {
+            return res.status(400).json({ error: rangeError });
         }
+        console.log(`[booked-slots] rangeStart: ${rangeStart.toISOString()}, rangeEnd: ${rangeEnd.toISOString()}`);
+        console.log(`[booked-slots] rangeStart: ${rangeStart.toISOString()}, rangeEnd: ${rangeEnd.toISOString()}`);
 
-        // Get business hours
         const businessHours = {
             start: school.businessHoursStart || '09:00',
             end: school.businessHoursEnd || '17:00'
         };
 
-        // Get available slots for the date
+        // Get available slots using the same range logic
         const { freeSlots, error: freeSlotsError } = await getFreeSlots(schoolId, date, businessHours);
         if (freeSlotsError) {
             return res.status(400).json({ error: freeSlotsError });
         }
 
-        // Get booked slots for the date
-        const { busySlots, error: busySlotsError } = await getBusySlots(schoolId, start, end);
+        // Get booked slots for the SAME window (eliminates irrelevant bookings)
+        const { busySlots, error: busySlotsError } = await getBusySlots(schoolId, rangeStart, rangeEnd);
         if (busySlotsError) {
             return res.status(400).json({ error: busySlotsError });
         }

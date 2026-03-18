@@ -762,6 +762,7 @@ router.get('/integrations', async (req, res) => {
                     type: existing.type,
                     connected: existing.connected,
                     connectedAt: existing.connectedAt,
+                    email: existing.config?.userEmail || existing.config?.account?.username || null,
                 };
             }
             return {
@@ -770,6 +771,7 @@ router.get('/integrations', async (req, res) => {
                 type: type,
                 connected: false,
                 connectedAt: null,
+                email: null,
             };
         });
 
