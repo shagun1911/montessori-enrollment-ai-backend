@@ -528,7 +528,7 @@ router.get('/dashboard', async (req, res) => {
             metrics: [
                 { label: 'Total Calls', value: totalCalls },
                 { label: 'Tours Booked', value: actualToursBooked },
-                { label: 'Call Minutes', value: callMinutes },
+                { label: 'Minutes Consumed', value: callMinutes, maxValue: 600 },
             ],
             chartData,
             recentCalls,
