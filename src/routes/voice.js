@@ -178,7 +178,7 @@ router.post('/incoming', (req, res) => {
     res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="Polly.Joanna-Neural">
-        Hello from your Montessori Enrollment AI Platform! The system is active and connected to Twilio.
+        Hello from your Childcare Enrollment AI Platform! The system is active and connected to Twilio.
     </Say>
     <Pause length="2"/>
     <Say voice="Polly.Joanna-Neural">

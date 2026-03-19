@@ -108,11 +108,15 @@ router.get('/schools', async (req, res) => {
                 return {
                     id: s._id.toString(),
                     name: s.name,
+                    address: s.address,
                     aiNumber: s.aiNumber,
                     routingNumber: s.routingNumber,
                     elevenlabsAgentId: s.elevenlabsAgentId,
                     status: s.status,
                     language: s.language,
+                    twilioSid: s.twilioSid || '',
+                    twilioAuthToken: s.twilioAuthToken || '',
+                    twilioPhoneNumber: s.twilioPhoneNumber || '',
                     calls,
                     inquiryCalls,
                     tours,
@@ -260,6 +264,9 @@ router.put('/schools/:id', async (req, res) => {
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (status !== undefined) school.status = status;
+        if (req.body.twilioSid !== undefined) school.twilioSid = req.body.twilioSid;
+        if (req.body.twilioAuthToken !== undefined) school.twilioAuthToken = req.body.twilioAuthToken;
+        if (req.body.twilioPhoneNumber !== undefined) school.twilioPhoneNumber = req.body.twilioPhoneNumber;
 
         await school.save();
 

@@ -13,7 +13,7 @@ const { sendEmail } = require('../services/mailService');
 const { generateICS } = require('../utils/ics');
 const { parseLocalDateTimeToUTC } = require('../utils/timezone');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
 
 const router = express.Router();
 
@@ -827,7 +827,7 @@ ${tourNotes ? `- Notes: ${tourNotes}\n` : ''}
         emailBody += `You can view the full call details in your dashboard.
 
 Best regards,
-Montessori Enrollment AI Platform`;
+Childcare Enrollment AI Platform`;
 
         // Send email via Gmail API using Google Calendar integration
         const emailResult = await sendEmailViaGmail(

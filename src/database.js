@@ -7,7 +7,7 @@ const Integration = require('./models/Integration');
 const ReferralLink = require('./models/ReferralLink');
 
 async function connectDatabase() {
-    const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/montessori-enrollment-ai';
+    const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/childcare-enrollment-ai';
     await mongoose.connect(uri);
     console.log('✅ Connected to MongoDB');
 }
@@ -27,7 +27,7 @@ async function seedDatabase() {
 
     // Create schools
     const schoolsData = [
-        { name: 'Sunshine Montessori', aiNumber: '+1 (555) 123-4567', routingNumber: '+1 (555) 123-4568', status: 'active' },
+        { name: 'Sunshine Childcare', aiNumber: '+1 (555) 123-4567', routingNumber: '+1 (555) 123-4568', status: 'active' },
     ];
 
     const schools = await School.insertMany(schoolsData);

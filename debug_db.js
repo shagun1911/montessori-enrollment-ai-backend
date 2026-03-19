@@ -3,7 +3,7 @@ require('dotenv').config();
 
 async function debugData() {
     try {
-        await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/montessori-enrollment-ai');
+        await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/childcare-enrollment-ai');
         console.log('Connected to MongoDB');
 
         const schoolId = '69a2a7bf84844ca0d53116d6';

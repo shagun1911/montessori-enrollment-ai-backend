@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
 
 function authMiddleware(req, res, next) {
     let token = null;

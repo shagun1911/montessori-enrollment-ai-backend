@@ -1,7 +1,7 @@
 {
-  "name": "montessori-enrollment-ai-backend",
+  "name": "childcare-enrollment-ai-backend",
   "version": "1.0.0",
-  "description": "Backend for Montessori Enrollment AI Platform (MongoDB)",
+  "description": "Backend for Childcare Enrollment AI Platform (MongoDB)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

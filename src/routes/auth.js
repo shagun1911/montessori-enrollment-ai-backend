@@ -8,7 +8,7 @@ const Integration = require('../models/Integration');
 const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'montessori-enrollment-ai-secret-key-2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
 
 // Google OAuth2 Client for Authentication
 // Use separate redirect URI for auth vs calendar integrations
