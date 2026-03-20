@@ -11,8 +11,9 @@ const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
+const PhoneNumber = require('../models/PhoneNumber');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
-const { importSipTrunk, importTwilioNumber, deletePhoneNumber } = require('../utils/elevenlabs');
+const { importSipTrunk, importTwilioNumber, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
 
 const router = express.Router();
 
@@ -265,30 +266,7 @@ router.put('/schools/:id', async (req, res) => {
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (status !== undefined) school.status = status;
-        if (req.body.twilioSid !== undefined) school.twilioSid = req.body.twilioSid;
-        if (req.body.twilioAuthToken !== undefined) school.twilioAuthToken = req.body.twilioAuthToken;
         if (req.body.twilioPhoneNumber !== undefined) school.twilioPhoneNumber = req.body.twilioPhoneNumber;
-
-        // If twilio credentials are now available but number is not imported, import it
-        if (school.twilioSid && school.twilioAuthToken && school.twilioPhoneNumber && !school.agentPhoneNumberId) {
-            try {
-                console.log(`[Admin Edit] Auto-importing Twilio number for ${school.name}`);
-                const result = await importTwilioNumber({
-                    sid: school.twilioSid,
-                    token: school.twilioAuthToken,
-                    phone_number: school.twilioPhoneNumber,
-                    label: `${school.name} AI Line`
-                });
-                if (result?.phone_number_id) {
-                    school.agentPhoneNumberId = result.phone_number_id;
-                    school.aiNumber = school.twilioPhoneNumber;
-                    console.log(`[Admin Edit] Successfully imported phone_number_id: ${result.phone_number_id}`);
-                }
-            } catch (err) {
-                console.error(`[Admin Edit] Twilio auto-import failed:`, err.message);
-                // We still save the other changes, but log the error
-            }
-        }
 
         await school.save();
 
@@ -299,109 +277,158 @@ router.put('/schools/:id', async (req, res) => {
     }
 });
 
-// POST /api/admin/schools/:id/phone-number - Import a phone number (SIP or Twilio) for a school
-router.post('/schools/:id/phone-number', async (req, res) => {
+// --- Centralized Phone Number Management ---
+
+// GET /api/admin/phone-numbers - List all imported phone numbers
+router.get('/phone-numbers', async (req, res) => {
     try {
-        const { id } = req.params;
+        const numbers = await PhoneNumber.find()
+            .populate('schoolId', 'name')
+            .sort({ createdAt: -1 })
+            .lean();
+        res.json(numbers);
+    } catch (err) {
+        console.error('List Phone Numbers error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/admin/phone-numbers - Import a new phone number (Global Pool)
+router.post('/phone-numbers', async (req, res) => {
+    try {
         const payload = req.body;
-
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ error: 'Invalid school ID' });
-        }
-
-        const school = await School.findById(id);
-        if (!school) {
-            return res.status(404).json({ error: 'School not found' });
-        }
-
         let result;
+
         if (payload.sid && payload.token) {
-            // Twilio Import
-            console.log(`[Admin Phone] Importing Twilio number for school: ${school.name}`);
+            console.log(`[Admin Phone] Importing Twilio number: ${payload.phone_number}`);
             result = await importTwilioNumber(payload);
         } else {
-            // SIP Trunk Import
-            console.log(`[Admin Phone] Importing SIP Trunk for school: ${school.name}`);
+            console.log(`[Admin Phone] Importing SIP Trunk: ${payload.phone_number}`);
             result = await importSipTrunk(payload);
         }
 
-        if (!result) {
-            return res.status(500).json({ error: 'Failed to retrieve response from ElevenLabs API' });
-        }
-
-        if (result.alreadyExists) {
-            return res.status(409).json({ 
-                error: 'This phone number is already imported in ElevenLabs. If you intended to reassign it, please delete it from the other school or ElevenLabs dashboard first.' 
-            });
-        }
-
-        const phoneNumberId = result.phone_number_id;
-        if (!phoneNumberId) {
+        if (!result || !result.phone_number_id) {
+            if (result?.alreadyExists) {
+                return res.status(409).json({ error: 'This phone number is already imported in ElevenLabs.' });
+            }
             return res.status(500).json({ error: 'Failed to retrieve phone_number_id from ElevenLabs API' });
         }
 
-        // Save to School document
-        school.agentPhoneNumberId = phoneNumberId;
-        school.aiNumber = payload.phone_number;
-        
-        // Persist Twilio credentials if provided
-        if (payload.sid && payload.token) {
-            school.twilioSid = payload.sid;
-            school.twilioAuthToken = payload.token;
-            school.twilioPhoneNumber = payload.phone_number;
-        }
-        
-        await school.save();
-
-        res.status(201).json({
-            message: 'Phone number imported and assigned successfully',
-            phone_number_id: phoneNumberId,
-            aiNumber: school.aiNumber
+        const newNum = await PhoneNumber.create({
+            phone_number_id: result.phone_number_id,
+            phone_number: payload.phone_number,
+            provider: (payload.sid && payload.token) ? 'twilio' : 'sip_trunk',
+            label: payload.label || 'Imported Number',
+            metadata: {
+                sid: payload.sid,
+                token: payload.token,
+                sip_address: payload.sip_address,
+                sip_username: payload.sip_username
+            }
         });
+
+        res.status(201).json(newNum);
     } catch (err) {
         console.error('Import Phone Number error:', err);
         res.status(500).json({ error: err.message || 'Internal server error' });
     }
 });
 
-// DELETE /api/admin/schools/:id/phone-number - Delete a phone number from a school and ElevenLabs
-router.delete('/schools/:id/phone-number', async (req, res) => {
+// DELETE /api/admin/phone-numbers/:id - Delete a phone number from ElevenLabs and Pool
+router.delete('/phone-numbers/:id', async (req, res) => {
     try {
         const { id } = req.params;
-
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ error: 'Invalid school ID' });
-        }
-
-        const school = await School.findById(id);
-        if (!school) {
-            return res.status(404).json({ error: 'School not found' });
-        }
-
-        if (!school.agentPhoneNumberId) {
-            return res.status(400).json({ error: 'No phone number assigned to this school' });
-        }
+        const numDoc = await PhoneNumber.findById(id);
+        if (!numDoc) return res.status(404).json({ error: 'Number not found' });
 
         // 1. Delete from ElevenLabs
         try {
-            await deletePhoneNumber(school.agentPhoneNumberId);
+            await deletePhoneNumber(numDoc.phone_number_id);
         } catch (err) {
-            console.warn(`[Admin Phone Delete] Failed to delete from ElevenLabs (it might already be gone):`, err.message);
+            console.warn(`[Admin Phone Delete] Failed to delete from ElevenLabs:`, err.message);
         }
 
-        // 2. Clear from School document
-        const oldNumber = school.aiNumber;
-        school.agentPhoneNumberId = undefined;
-        school.aiNumber = '';
-        await school.save();
+        // 2. If assigned to a school, clear it there too
+        if (numDoc.schoolId) {
+            await School.findByIdAndUpdate(numDoc.schoolId, {
+                aiNumber: '',
+                agentPhoneNumberId: ''
+            });
+        }
 
-        res.json({
-            success: true,
-            message: `Phone number ${oldNumber} deleted successfully`
-        });
+        await PhoneNumber.findByIdAndDelete(id);
+        res.json({ success: true, message: 'Phone number deleted successfully' });
     } catch (err) {
         console.error('Delete Phone Number error:', err);
         res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+});
+
+// POST /api/admin/schools/:id/assign-number - Assign an imported number to a school
+router.post('/schools/:id/assign-number', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { phoneNumberId } = req.body; 
+
+        console.log(`[Assign Phone] Request received for School: ${id}, PhoneNumber Doc: ${phoneNumberId}`);
+
+        const [school, phoneNum] = await Promise.all([
+            School.findById(id),
+            PhoneNumber.findById(phoneNumberId)
+        ]);
+
+        if (!school) return res.status(404).json({ error: 'School not found' });
+        if (!phoneNum) return res.status(404).json({ error: 'Phone number not found' });
+
+        if (phoneNum.schoolId && phoneNum.schoolId.toString() !== id) {
+            return res.status(400).json({ error: 'This number is already assigned to another school' });
+        }
+
+        // 1. If school already has a number, unassign the old one
+        if (school.agentPhoneNumberId) {
+            await PhoneNumber.findOneAndUpdate(
+                { phone_number_id: school.agentPhoneNumberId },
+                { schoolId: null }
+            );
+        }
+
+        // 2. Assign new number
+        school.aiNumber = phoneNum.phone_number;
+        school.agentPhoneNumberId = phoneNum.phone_number_id;
+        
+        // If it's a twilio number, sync credentials to school for SMS etc.
+        if (phoneNum.provider === 'twilio') {
+            school.twilioSid = phoneNum.metadata?.sid || '';
+            school.twilioAuthToken = phoneNum.metadata?.token || '';
+            school.twilioPhoneNumber = phoneNum.phone_number;
+        }
+
+        await school.save();
+
+        // 2.1 Update ElevenLabs Phone Number with the Agent ID
+        if (school.elevenlabsAgentId) {
+            console.log(`[Assign Phone] Linking Agent ID ${school.elevenlabsAgentId} to Phone ID ${phoneNum.phone_number_id}...`);
+            try {
+                const elResult = await updatePhoneNumber(phoneNum.phone_number_id, {
+                    agent_id: school.elevenlabsAgentId
+                });
+                console.log(`[Assign Phone] ElevenLabs Link Success:`, JSON.stringify(elResult, null, 2));
+            } catch (elError) {
+                console.warn(`[Assign Phone] Failed to link agent ${school.elevenlabsAgentId} to number ${phoneNum.phone_number_id}:`, elError.message);
+                // We proceed anyway as the local mapping is done, but log the warning
+            }
+        } else {
+            console.warn(`[Assign Phone] No ElevenLabs Agent ID found for school ${school.name}, skipping ElevenLabs linking`);
+        }
+
+        // 3. Update PhoneNumber doc
+        phoneNum.schoolId = school._id;
+        await phoneNum.save();
+
+        res.json({ success: true, message: 'Phone number assigned successfully', aiNumber: school.aiNumber });
+    } catch (err) {
+        console.error('Assign Phone Number error:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

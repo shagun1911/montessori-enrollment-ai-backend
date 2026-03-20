@@ -16,6 +16,13 @@ const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
 const { getCallDurationSeconds } = require('../utils/webhookHelpers');
+const { 
+    formatQAPairsForKB, 
+    ingestKnowledgeBaseDocument, 
+    patchAgentPrompt,
+    registerTool,
+    createSchoolAgent
+} = require('../utils/elevenlabs');
 
 const APPOINTMENT_AGENT_PROMPT = `You are a strict, efficient appointment scheduling agent.
 
@@ -145,19 +152,7 @@ const router = express.Router();
 // Apply auth middleware to all school routes
 router.use(authMiddleware, schoolOnly);
 
-// Helper function to format Q&A pairs into text for knowledge base ingestion
-function formatQAPairsForKB(qaPairs) {
-    if (!Array.isArray(qaPairs) || qaPairs.length === 0) {
-        return '';
-    }
-
-    return qaPairs
-        .filter(pair => pair.question && pair.answer)
-        .map((pair, index) => {
-            return `Q${index + 1}: ${pair.question}\nA${index + 1}: ${pair.answer}`;
-        })
-        .join('\n\n');
-}
+// Helper function to format Q&A pairs is now imported from elevenlabs utility
 
 // Helper function to delete a knowledge base document from ElevenLabs
 async function deleteKnowledgeBaseDocument(documentId) {
@@ -207,7 +202,8 @@ async function patchAgentKnowledgeBaseOnly(agentId, documentId) {
         const response = await axios.patch(url, payload, {
             headers: {
                 'accept': 'application/json',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...(process.env.ELEVENLABS_API_KEY && { 'Authorization': `Bearer ${process.env.ELEVENLABS_API_KEY}` })
             }
         });
         console.log('[Agent PATCH KB] Response', response.status, JSON.stringify(response.data));
@@ -235,12 +231,15 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         const url = `${baseUrl}/api/v1/agents/${agentId}/prompt`;
 
         const fullPrompt = `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`;
+        const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+        const combinedToolIds = Array.isArray(toolIds) ? [...new Set([...toolIds, globalTimeToolId])] : [globalTimeToolId];
+
         const payload = {
             first_message: firstMessage || '',
             knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : [],
             language: 'en',
             system_prompt: fullPrompt,
-            tool_ids: Array.isArray(toolIds) ? toolIds : []
+            tool_ids: combinedToolIds
         };
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
@@ -273,56 +272,7 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
     }
 }
 
-// Helper function to ingest a knowledge base document to ElevenLabs
-async function ingestKnowledgeBaseDocument(text, schoolName) {
-    const baseUrl = process.env.ELEVENLABS_API_URL;
-    if (!baseUrl) {
-        console.warn('[KB] ELEVENLABS_API_URL not configured, skipping KB ingestion');
-        return null;
-    }
-
-    try {
-        const url = `${baseUrl}/api/v1/knowledge-base/ingest`;
-
-        // Generate document name on backend
-        const documentName = `${schoolName} - Knowledge Base`;
-
-        // Create FormData
-        const formData = new FormData();
-        formData.append('source_type', 'text');
-        formData.append('text', text);
-        formData.append('name', documentName);
-        // parent_folder_id is optional, so we don't append it if null
-
-        console.log(`[KB POST] Request URL: ${url}`);
-        console.log(`[KB POST] FormData Payload:`);
-        console.log(`[KB POST]   - source_type: text`);
-        console.log(`[KB POST]   - name: ${documentName}`);
-        console.log(`[KB POST]   - text: ${text.length} characters`);
-        console.log(`[KB POST]   - text preview (first 200 chars): ${text.substring(0, 200)}${text.length > 200 ? '...' : ''}`);
-        console.log(`[KB POST]   - text preview (last 200 chars): ${text.length > 200 ? '...' + text.substring(text.length - 200) : text}`);
-        console.log(`[KB POST] FormData Headers:`, formData.getHeaders());
-
-        const response = await axios.post(url, formData, {
-            headers: {
-                ...formData.getHeaders()
-            }
-        });
-
-        console.log(`[KB POST] Response Status: ${response.status}`);
-        console.log(`[KB POST] Response Data:`, JSON.stringify(response.data, null, 2));
-
-        const documentId = response.data?.document_id || response.data?.id;
-        console.log(`[KB] Successfully ingested document: ${documentId}`);
-        return documentId;
-    } catch (err) {
-        console.error(`[KB POST] Failed to ingest document`);
-        console.error(`[KB POST] Error Status:`, err.response?.status);
-        console.error(`[KB POST] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
-        console.error(`[KB POST] Error Message:`, err.message);
-        throw err;
-    }
-}
+// Helper function to ingest knowledge base is now imported from elevenlabs utility
 
 // GET /api/school/dashboard - School-specific metrics
 router.get('/dashboard', async (req, res) => {
@@ -1049,18 +999,18 @@ router.put('/settings', async (req, res) => {
                             school.knowledgeBaseDocumentId = newDocumentId;
                             console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
 
-                            // Step 4: PATCH agent with only knowledge_base_ids (document_id from DB, AGENT_ID from env)
-                            const agentId = process.env.AGENT_ID || null;
+                            // Step 4: PATCH agent with only knowledge_base_ids
+                            const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
                             if (agentId) {
                                 try {
                                     await patchAgentKnowledgeBaseOnly(agentId, newDocumentId);
                                     didUpdateAgentInKbSync = true;
-                                    console.log('[PUT /settings] Agent KB updated (knowledge_base_ids only)');
+                                    console.log(`[PUT /settings] Agent ${agentId} KB updated with ${newDocumentId}`);
                                 } catch (err) {
                                     console.error('[PUT /settings] Failed to PATCH agent KB, but KB document was created:', err);
                                 }
                             } else {
-                                console.warn('[PUT /settings] AGENT_ID not set — skipping agent PATCH after KB sync');
+                                console.warn('[PUT /settings] No Agent ID found for KB sync');
                             }
                         }
                     }
@@ -1068,7 +1018,7 @@ router.put('/settings', async (req, res) => {
                     // All Q&A pairs removed: clear KB on agent (PATCH knowledge_base_ids: [])
                     console.log('[PUT /settings] All Q&A pairs removed, KB document deleted');
                     school.knowledgeBaseDocumentId = '';
-                    const agentId = process.env.AGENT_ID || null;
+                    const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
                     if (agentId && process.env.ELEVENLABS_API_URL) {
                         try {
                             await patchAgentKnowledgeBaseOnly(agentId, null);

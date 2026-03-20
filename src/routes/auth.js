@@ -6,7 +6,7 @@ const User = require('../models/User');
 const School = require('../models/School');
 const Integration = require('../models/Integration');
 const { authMiddleware } = require('../middleware/auth');
-const { createSchoolAgent } = require('../utils/elevenlabs');
+const { createSchoolAgent, registerTool, patchAgentPrompt, formatQAPairsForKB, ingestKnowledgeBaseDocument } = require('../utils/elevenlabs');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
@@ -127,10 +127,35 @@ router.post('/register', async (req, res) => {
             status: 'active'
         });
 
-        // 2b. Create ElevenLabs Agent for the school
-        const agentId = await createSchoolAgent(schoolName);
+        // 2b. Generate Knowledge Base for the school (if any qaPairs exist)
+        let knowledgeBaseId = null;
+        if (school.qaPairs && school.qaPairs.length > 0) {
+            const kbText = formatQAPairsForKB(school.qaPairs);
+            if (kbText) {
+                knowledgeBaseId = await ingestKnowledgeBaseDocument(kbText, schoolName);
+                if (knowledgeBaseId) {
+                    school.knowledgeBaseDocumentId = knowledgeBaseId;
+                    await school.save();
+                }
+            }
+        }
+
+        // 2c. Create ElevenLabs Agent for the school
+        const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
         if (agentId) {
             school.elevenlabsAgentId = agentId;
+            
+            // Register booked-slots tool
+            const toolId = await registerTool(school._id.toString(), agentId);
+            if (toolId) {
+                const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                // Link tools to agent (both the school-specific and global time tool)
+                await patchAgentPrompt(agentId, {
+                    tool_ids: [toolId, globalTimeToolId]
+                });
+                console.log(`[Register] Tools linked to Agent ${agentId}:`, [toolId, globalTimeToolId]);
+            }
+            
             await school.save();
         }
 
@@ -336,10 +361,33 @@ router.post('/google/callback', async (req, res) => {
                 status: 'active'
             });
 
+            // Generate Knowledge Base
+            let knowledgeBaseId = null;
+            if (school.qaPairs && school.qaPairs.length > 0) {
+                const kbText = formatQAPairsForKB(school.qaPairs);
+                if (kbText) {
+                    knowledgeBaseId = await ingestKnowledgeBaseDocument(kbText, schoolName);
+                    if (knowledgeBaseId) {
+                        school.knowledgeBaseDocumentId = knowledgeBaseId;
+                        await school.save();
+                    }
+                }
+            }
+
             // Create ElevenLabs Agent for the school
-            const agentId = await createSchoolAgent(schoolName);
+            const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
             if (agentId) {
                 school.elevenlabsAgentId = agentId;
+                
+                // Register booked-slots tool
+                const toolId = await registerTool(school._id.toString(), agentId);
+                if (toolId) {
+                    const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                    await patchAgentPrompt(agentId, {
+                        tool_ids: [toolId, globalTimeToolId]
+                    });
+                }
+                
                 await school.save();
             }
 
@@ -419,10 +467,33 @@ router.post('/google/complete-signup', async (req, res) => {
             status: 'active'
         });
 
+        // Generate Knowledge Base
+        let knowledgeBaseId = null;
+        if (school.qaPairs && school.qaPairs.length > 0) {
+            const kbText = formatQAPairsForKB(school.qaPairs);
+            if (kbText) {
+                knowledgeBaseId = await ingestKnowledgeBaseDocument(kbText, schoolName);
+                if (knowledgeBaseId) {
+                    school.knowledgeBaseDocumentId = knowledgeBaseId;
+                    await school.save();
+                }
+            }
+        }
+
         // Create ElevenLabs Agent for the school
-        const agentId = await createSchoolAgent(schoolName);
+        const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
         if (agentId) {
             school.elevenlabsAgentId = agentId;
+            
+            // Register booked-slots tool
+            const toolId = await registerTool(school._id.toString(), agentId);
+            if (toolId) {
+                const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                await patchAgentPrompt(agentId, {
+                    tool_ids: [toolId, globalTimeToolId]
+                });
+            }
+            
             await school.save();
         }
 
