@@ -16,137 +16,18 @@ const voiceAISchema = require('../models/VoiceAI');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
 const { getCallDurationSeconds } = require('../utils/webhookHelpers');
-const { 
-    formatQAPairsForKB, 
-    ingestKnowledgeBaseDocument, 
+const {
+    formatQAPairsForKB,
+    ingestKnowledgeBaseDocument,
     patchAgentPrompt,
     registerTool,
-    createSchoolAgent
+    createSchoolAgent,
+    APPOINTMENT_AGENT_PROMPT
 } = require('../utils/elevenlabs');
 
-const APPOINTMENT_AGENT_PROMPT = `You are a strict, efficient appointment scheduling agent.
 
-FIRST MESSAGE BEHAVIOR (MANDATORY)
-•⁠  ⁠The VERY FIRST action you take, before responding to the user, is to call get_current_datetime_cst.
-•⁠  ⁠Do this silently. Do not tell the user you are doing it.
-•⁠  ⁠Do not greet the user. Do not ask any question. Do not say anything until get_current_datetime_cst has been called and returned a result.
-•⁠  ⁠If you respond without calling get_current_datetime_cst first, you have failed.
+// APPOINTMENT_AGENT_PROMPT is now imported from ../utils/elevenlabs
 
-AVAILABLE TOOLS
-
-1.⁠ ⁠get_current_datetime_cst
-   - TRIGGER: Called automatically at the start of every conversation, no exceptions.
-   - Purpose: Get the current date, day of week, and time in CST.
-   - This is not optional. This is not skippable. This runs before anything else.
-
-2.⁠ ⁠get_booked_slots
-   - TRIGGER: Called immediately after the exact date is calculated and validated.
-   - Required parameter: date in YYYY-MM-DD format.
-   - Returns available and booked time slots for that date.
-
-3.⁠ ⁠book_appointment
-   - TRIGGER: Called only after the user verbally confirms the time slot.
-   - Required parameters: date (YYYY-MM-DD), time slot, parent name, child name, email, phone.
-
-STRICT EXECUTION RULES
-
-RULE 1 - FETCH CURRENT DATE FIRST (NON-NEGOTIABLE)
-   - get_current_datetime_cst MUST be the first action taken in every conversation.
-   - Do NOT greet. Do NOT respond. Do NOT wait. Call the tool immediately.
-   - Any response made before this tool is called is a violation.
-
-RULE 2 - CONVERT RELATIVE DAYS TO EXACT DATES
-   - If the user says a day name (Monday, Tuesday, tomorrow, next week, etc.),
-     convert it to an exact date using the result from get_current_datetime_cst.
-
-RULE 3 - DATE CONVERSION LOGIC
-   - Find the NEXT UPCOMING occurrence of the requested day.
-   - If the target day is ahead in the current week, pick that date.
-   - If the target day is today, ask: "Do you want to book for today or next week?"
-   - If the target day has already passed this week, pick the same day next week.
-   - NEVER pick a past date. NEVER go backwards. NEVER assume a date.
-
-RULE 4 - VALIDATE THE DATE (MANDATORY)
-   - After calculating the exact date, verify the day name matches the date.
-   - Example: User says "Tuesday", you calculate March 19.
-     Verify March 19 is actually a Tuesday. If not, recalculate.
-   - Never proceed with a date that has not been validated.
-
-RULE 5 - CHECK SLOTS IMMEDIATELY
-   - Once the exact date is validated, call get_booked_slots immediately.
-   - Do not ask the user again for the date.
-   - Do not wait. Do not pause. Call the tool.
-
-RULE 6 - SLOT SELECTION
-   - All times in get_booked_slots response are in UTC.
-   - Convert to CST by subtracting 6 hours before presenting to the user.
-   - If the user already specified a time, check if that time exists in availableSlots.
-   - If available, confirm with user: "I have [time] available on [day], [date]. Shall I book it?"
-   - If not available, say: "Slots are already booked for this day. Please choose another date."
-
-RULE 7 - BOOKING
-   - Only call book_appointment after the user verbally confirms the slot.
-   - Pass all required parameters: date, time, parent name, child name, email, phone.
-   - Wait for a success response before confirming.
-
-RULE 8 - FINAL CONFIRMATION
-   - Only confirm after book_appointment returns success.
-   - Say: "Your appointment is booked for [Day], [Date] at [Time] CST."
-   - Never confirm before the tool returns success.
-
-RULE 9 - KEEP RESPONSES SHORT, DIRECT, AND ACTION-ORIENTED.
-
-EXECUTION ORDER (HARDCODED, NO EXCEPTIONS)
-
-   Step 1: Call get_current_datetime_cst        [on conversation start, before anything]
-   Step 2: Greet the user and collect details    [after tool returns]
-   Step 3: Convert relative day to exact date    [using tool result]
-   Step 4: Validate day name matches date        [mandatory check]
-   Step 5: Call get_booked_slots                 [immediately after validation]
-   Step 6: Present available slot to user        [convert UTC to CST]
-   Step 7: Get verbal confirmation from user
-   Step 8: Call book_appointment
-   Step 9: Confirm booking to user               [only after tool success]
-
-WORKFLOW EXAMPLE
-
-User opens conversation.
-
-[Agent immediately calls get_current_datetime_cst silently]
-[Tool returns: Wednesday, March 18, 2026, 08:04 CST]
-
-Agent: "Thank you for calling. How can I help you today?"
-
-User: "I want to book a tour for Tuesday at 4 PM."
-
-Agent internally:
-•⁠  ⁠Today is Wednesday March 18. Tuesday has already passed this week.
-•⁠  ⁠Next Tuesday = March 24, 2026.
-•⁠  ⁠Validate: March 24, 2026 is a Tuesday. Confirmed.
-•⁠  ⁠Call get_booked_slots with date: "2026-03-24"
-•⁠  ⁠Parse availableSlots. Convert UTC to CST.
-•⁠  ⁠4 PM CST = 22:00 UTC. Check if 22:00 UTC is in availableSlots.
-
-Agent: "I have 4:00 PM available on Tuesday, March 24. Shall I go ahead and book it?"
-
-User: "Yes."
-
-Agent calls book_appointment with all parameters.
-Tool returns success.
-
-Agent: "Your appointment is booked for Tuesday, March 24, 2026 at 4:00 PM CST."
-
-IMPORTANT BEHAVIOR
-
-•⁠  ⁠Do NOT greet the user before calling get_current_datetime_cst.
-•⁠  ⁠Do NOT respond to the user before get_current_datetime_cst has returned a result.
-•⁠  ⁠Do NOT explain internal steps or mention tool names to the user.
-•⁠  ⁠Do NOT hallucinate dates. ALWAYS use the date from get_current_datetime_cst.
-•⁠  ⁠Do NOT confirm a booking before book_appointment returns success.
-•⁠  ⁠ALWAYS validate the day name matches the calculated date.
-•⁠  ⁠ALWAYS convert UTC to CST before presenting times to the user.
-•⁠  ⁠ALWAYS find the NEXT upcoming occurrence of a day, never a past one.
-`;
 
 const router = express.Router();
 // Apply auth middleware to all school routes
@@ -231,15 +112,13 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         const url = `${baseUrl}/api/v1/agents/${agentId}/prompt`;
 
         const fullPrompt = `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`;
-        const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
-        const combinedToolIds = Array.isArray(toolIds) ? [...new Set([...toolIds, globalTimeToolId])] : [globalTimeToolId];
 
         const payload = {
             first_message: firstMessage || '',
             knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : [],
             language: 'en',
             system_prompt: fullPrompt,
-            tool_ids: combinedToolIds
+            // tool_ids: tool configuration is handled separately during school registration
         };
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
@@ -976,9 +855,7 @@ router.put('/settings', async (req, res) => {
             console.log('[PUT /settings] qaPairs set on document:', school.qaPairs.length);
         }
 
-        let didUpdateAgentInKbSync = false;
-
-        // Sync with ElevenLabs Knowledge Base if qaPairs changed (DELETE old KB, POST new KB, then PATCH agent)
+        // Sync with ElevenLabs Knowledge Base if qaPairs changed (DELETE old KB, POST new KB)
         if (qaPairsChanged && Array.isArray(qaPairs)) {
             try {
                 // Step 1: Delete old KB document only if document_id exists and is not empty
@@ -998,33 +875,6 @@ router.put('/settings', async (req, res) => {
                         if (newDocumentId) {
                             school.knowledgeBaseDocumentId = newDocumentId;
                             console.log('[PUT /settings] KB document synced, new document_id:', newDocumentId);
-
-                            // Step 4: PATCH agent with only knowledge_base_ids
-                            const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
-                            if (agentId) {
-                                try {
-                                    await patchAgentKnowledgeBaseOnly(agentId, newDocumentId);
-                                    didUpdateAgentInKbSync = true;
-                                    console.log(`[PUT /settings] Agent ${agentId} KB updated with ${newDocumentId}`);
-                                } catch (err) {
-                                    console.error('[PUT /settings] Failed to PATCH agent KB, but KB document was created:', err);
-                                }
-                            } else {
-                                console.warn('[PUT /settings] No Agent ID found for KB sync');
-                            }
-                        }
-                    }
-                } else {
-                    // All Q&A pairs removed: clear KB on agent (PATCH knowledge_base_ids: [])
-                    console.log('[PUT /settings] All Q&A pairs removed, KB document deleted');
-                    school.knowledgeBaseDocumentId = '';
-                    const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
-                    if (agentId && process.env.ELEVENLABS_API_URL) {
-                        try {
-                            await patchAgentKnowledgeBaseOnly(agentId, null);
-                            didUpdateAgentInKbSync = true;
-                        } catch (err) {
-                            console.error('[PUT /settings] Failed to clear agent KB:', err);
                         }
                     }
                 }
@@ -1034,13 +884,13 @@ router.put('/settings', async (req, res) => {
             }
         }
 
-        // When only first message and/or system prompt changed: PATCH agent (no KB DELETE/POST)
-        if ((scriptChanged || systemPromptChanged) && !didUpdateAgentInKbSync) {
+        // Consolidated Agent Update: If Q&A, first message, or system prompt changed, push FULL payload
+        if (qaPairsChanged || scriptChanged || systemPromptChanged) {
             // Prefer school-specific agent ID when set; fall back to global AGENT_ID
             const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
             if (agentId) {
                 if (!process.env.ELEVENLABS_API_URL) {
-                    console.warn('[PUT /settings] ELEVENLABS_API_URL not set — skipping agent PATCH (external API not called)');
+                    console.warn('[PUT /settings] ELEVENLABS_API_URL not set — skipping agent PATCH');
                 } else {
                     try {
                         await updateAgentWithKnowledgeBase(
@@ -1050,13 +900,13 @@ router.put('/settings', async (req, res) => {
                             school.knowledgeBaseDocumentId || '',
                             school.toolIds || []
                         );
-                        console.log('[PUT /settings] Agent updated (first message / system prompt only)');
+                        console.log('[PUT /settings] Agent updated with full payload (KB and/or Persona changes)');
                     } catch (err) {
-                        console.error('[PUT /settings] Failed to update agent with new script/prompt:', err);
+                        console.error('[PUT /settings] Failed to update agent:', err);
                     }
                 }
             } else {
-                console.warn('[PUT /settings] No agent ID (school.elevenlabsAgentId or AGENT_ID) — skipping agent PATCH; external API not called');
+                console.warn('[PUT /settings] No agent ID — skipping agent PATCH');
             }
         }
 

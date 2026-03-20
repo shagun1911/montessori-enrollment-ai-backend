@@ -6,7 +6,15 @@ const User = require('../models/User');
 const School = require('../models/School');
 const Integration = require('../models/Integration');
 const { authMiddleware } = require('../middleware/auth');
-const { createSchoolAgent, registerTool, patchAgentPrompt, formatQAPairsForKB, ingestKnowledgeBaseDocument } = require('../utils/elevenlabs');
+const { 
+    createSchoolAgent, 
+    registerTool, 
+    patchAgentPrompt, 
+    formatQAPairsForKB, 
+    ingestKnowledgeBaseDocument,
+    NORA_SYSTEM_PROMPT_TEMPLATE,
+    DEFAULT_FIRST_MESSAGE_TEMPLATE
+} = require('../utils/elevenlabs');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
@@ -120,11 +128,16 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Email already registered.' });
         }
 
-        // 2. Create the school
+        // 2. Create the school with default AI settings for UI visibility
+        const defaultSystemPrompt = NORA_SYSTEM_PROMPT_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+        const defaultFirstMessage = DEFAULT_FIRST_MESSAGE_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+
         const school = await School.create({
             name: schoolName,
             address: address || '',
-            status: 'active'
+            status: 'active',
+            systemPrompt: defaultSystemPrompt,
+            script: defaultFirstMessage
         });
 
         // 2b. Generate Knowledge Base for the school (if any qaPairs exist)
@@ -355,10 +368,16 @@ router.post('/google/callback', async (req, res) => {
             }
 
             // Create school
+            // Create school with default AI settings for UI visibility
+            const defaultSystemPrompt = NORA_SYSTEM_PROMPT_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+            const defaultFirstMessage = DEFAULT_FIRST_MESSAGE_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+
             const school = await School.create({
                 name: schoolName,
                 address: address || '',
-                status: 'active'
+                status: 'active',
+                systemPrompt: defaultSystemPrompt,
+                script: defaultFirstMessage
             });
 
             // Generate Knowledge Base
@@ -461,10 +480,16 @@ router.post('/google/complete-signup', async (req, res) => {
         }
 
         // Create school
+        // Create school with default AI settings for UI visibility
+        const defaultSystemPrompt = NORA_SYSTEM_PROMPT_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+        const defaultFirstMessage = DEFAULT_FIRST_MESSAGE_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
+
         const school = await School.create({
             name: schoolName,
             address: address || '',
-            status: 'active'
+            status: 'active',
+            systemPrompt: defaultSystemPrompt,
+            script: defaultFirstMessage
         });
 
         // Generate Knowledge Base

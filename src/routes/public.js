@@ -9,6 +9,10 @@ const ReferralLink = require('../models/ReferralLink');
 const Referral = require('../models/Referral');
 const TourBooking = require('../models/TourBooking');
 const { createCalendarEvent, getFreeSlots, isSlotAvailable } = require('../services/calendarService');
+const { 
+    NORA_SYSTEM_PROMPT_TEMPLATE, 
+    DEFAULT_FIRST_MESSAGE_TEMPLATE 
+} = require('../utils/elevenlabs');
 
 const router = express.Router();
 
@@ -255,12 +259,17 @@ router.post('/refer/:code/register', async (req, res) => {
         const referrerSchoolId = link.schoolId._id;
         const referrerSchoolName = link.schoolId.name;
 
+        const defaultSystemPrompt = NORA_SYSTEM_PROMPT_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName.trim());
+        const defaultFirstMessage = DEFAULT_FIRST_MESSAGE_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName.trim());
+
         const school = await School.create({
             name: schoolName.trim(),
             aiNumber: '',
             routingNumber: '',
             escalationNumber: '',
             status: 'active',
+            systemPrompt: defaultSystemPrompt,
+            script: defaultFirstMessage
         });
 
         const passwordHash = bcrypt.hashSync(password, 10);
