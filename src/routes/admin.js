@@ -69,7 +69,6 @@ router.get('/dashboard', async (req, res) => {
                 { label: 'Total Schools', value: totalSchools },
                 { label: 'Total Calls', value: totalCalls },
                 { label: 'Inquiry Calls', value: inquiryCalls },
-                { label: 'Followups Sent', value: sentFollowups },
             ],
             recentCalls: formattedCalls,
             recentFollowups: formattedFollowups,
