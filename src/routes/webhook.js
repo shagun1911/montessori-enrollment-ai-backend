@@ -535,7 +535,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         
         console.log(`[Webhook Booking] Calendar event creation result:`, JSON.stringify(calResult, null, 2));
 
-        // Create TourBooking record
+        // Create the official TourBooking record exactly once here
         const tourBooking = await TourBooking.create({
             schoolId,
             parentName,

@@ -142,7 +142,6 @@ IMPORTANT BEHAVIOR
 `;
 
 const router = express.Router();
-
 // Apply auth middleware to all school routes
 router.use(authMiddleware, schoolOnly);
 
@@ -219,8 +218,8 @@ async function patchAgentKnowledgeBaseOnly(agentId, documentId) {
     }
 }
 
-// Helper function to update agent with knowledge base ID (full config: first_message, prompt, knowledge_base_ids)
-async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, knowledgeBaseId) {
+// Helper function to update agent with knowledge base ID (full config: first_message, prompt, knowledge_base_ids, tool_ids)
+async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, knowledgeBaseId, toolIds = []) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
         console.warn('[Agent PATCH] ELEVENLABS_API_URL not configured, skipping agent update');
@@ -233,37 +232,28 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
     }
 
     try {
-        const url = `${baseUrl}/api/v1/agents/${agentId}`;
+        const url = `${baseUrl}/api/v1/agents/${agentId}/prompt`;
 
         const fullPrompt = `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`;
         const payload = {
-            conversation_config: {
-                agent: {
-                    first_message: firstMessage || '',
-                    language: 'en',
-                    prompt: {
-                        prompt: fullPrompt
-                    }
-                }
-            },
-            knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : []
+            first_message: firstMessage || '',
+            knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : [],
+            language: 'en',
+            system_prompt: fullPrompt,
+            tool_ids: Array.isArray(toolIds) ? toolIds : []
         };
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
         console.log(`[Agent PATCH] Request URL: ${url}`);
         console.log(`[Agent PATCH] Agent ID: ${agentId}`);
-        console.log(`[Agent PATCH] Knowledge Base ID: ${knowledgeBaseId || '(none)'}`);
-        console.log(`[Agent PATCH] first_message length: ${(firstMessage || '').length} characters`);
-        console.log(`[Agent PATCH] first_message (full):`, firstMessage || '');
-        console.log(`[Agent PATCH] system_prompt length: ${(systemPrompt || '').length} characters`);
-        console.log(`[Agent PATCH] system_prompt (full):`, systemPrompt || '');
-        console.log(`[Agent PATCH] full prompt (with APPOINTMENT_AGENT_PROMPT) length: ${fullPrompt.length} characters`);
-        console.log('[Agent PATCH] Payload (full):', JSON.stringify(payload, null, 2));
+        console.log(`[Agent PATCH] Tool IDs:`, payload.tool_ids);
+        console.log(`[Agent PATCH] Payload (full):`, JSON.stringify(payload, null, 2));
         console.log('[Agent PATCH] ====================================');
 
         const response = await axios.patch(url, payload, {
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...(process.env.ELEVENLABS_API_KEY && { 'Authorization': `Bearer ${process.env.ELEVENLABS_API_KEY}` })
             }
         });
 
@@ -451,6 +441,27 @@ router.get('/dashboard', async (req, res) => {
             };
         });
 
+        // ── STEP 2.5: Fetch CallLog entries (New/Manual Syncs) ──────────
+        const callLogEntries = await CallLog.find({ schoolId: schoolObjectId })
+            .sort({ createdAt: -1 })
+            .limit(500)
+            .lean();
+
+        const callLogCalls = callLogEntries.map(cl => ({
+            id: cl._id.toString(),
+            conversationId: cl.conversation_id,
+            callerPhone: cl.from_phone_number || 'Unknown',
+            callerName: 'Parent',
+            duration: cl.duration || 0,
+            timestamp: cl.createdAt,
+            recordingUrl: cl.conversation_id ? `${backendUrl}/api/school/calls/${cl.conversation_id}/audio?token=${userToken}` : null,
+            callType: cl.callType || 'inquiry',
+            summary: cl.summary || '',
+            tourBookingDetected: false, // Tour booking handled via separate collection
+            tourBookingDate: null,
+            aiProcessed: true
+        }));
+
         // ── STEP 3: Merge and Deduplicate ──────────
         const allCallsMap = new Map();
 
@@ -460,9 +471,15 @@ router.get('/dashboard', async (req, res) => {
             allCallsMap.set(key, c);
         });
 
+        // Add CallLogs (The 92 synced calls etc)
+        callLogCalls.forEach(clc => {
+            const key = clc.conversationId || `${normalizePhone(clc.callerPhone)}_${new Date(clc.timestamp).getTime()}`;
+            allCallsMap.set(key, clc);
+        });
+
         // Add/Enrich with Webhooks (they have summaries & tour flags)
         webhookCalls.forEach(whc => {
-            const key = `${normalizePhone(whc.callerPhone)}_${new Date(whc.timestamp).getTime()}`;
+            const key = whc.conversationId || `${normalizePhone(whc.callerPhone)}_${new Date(whc.timestamp).getTime()}`;
             if (allCallsMap.has(key)) {
                 const existing = allCallsMap.get(key);
                 allCallsMap.set(key, { ...existing, ...whc, id: existing.id });
@@ -1080,7 +1097,8 @@ router.put('/settings', async (req, res) => {
                             agentId,
                             school.script || '',
                             school.systemPrompt || '',
-                            school.knowledgeBaseDocumentId || ''
+                            school.knowledgeBaseDocumentId || '',
+                            school.toolIds || []
                         );
                         console.log('[PUT /settings] Agent updated (first message / system prompt only)');
                     } catch (err) {

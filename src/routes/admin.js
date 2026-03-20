@@ -12,6 +12,7 @@ const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
+const { importSipTrunk, importTwilioNumber, deletePhoneNumber } = require('../utils/elevenlabs');
 
 const router = express.Router();
 
@@ -268,12 +269,139 @@ router.put('/schools/:id', async (req, res) => {
         if (req.body.twilioAuthToken !== undefined) school.twilioAuthToken = req.body.twilioAuthToken;
         if (req.body.twilioPhoneNumber !== undefined) school.twilioPhoneNumber = req.body.twilioPhoneNumber;
 
+        // If twilio credentials are now available but number is not imported, import it
+        if (school.twilioSid && school.twilioAuthToken && school.twilioPhoneNumber && !school.agentPhoneNumberId) {
+            try {
+                console.log(`[Admin Edit] Auto-importing Twilio number for ${school.name}`);
+                const result = await importTwilioNumber({
+                    sid: school.twilioSid,
+                    token: school.twilioAuthToken,
+                    phone_number: school.twilioPhoneNumber,
+                    label: `${school.name} AI Line`
+                });
+                if (result?.phone_number_id) {
+                    school.agentPhoneNumberId = result.phone_number_id;
+                    school.aiNumber = school.twilioPhoneNumber;
+                    console.log(`[Admin Edit] Successfully imported phone_number_id: ${result.phone_number_id}`);
+                }
+            } catch (err) {
+                console.error(`[Admin Edit] Twilio auto-import failed:`, err.message);
+                // We still save the other changes, but log the error
+            }
+        }
+
         await school.save();
 
         res.json({ message: 'School updated successfully' });
     } catch (err) {
         console.error('Update school error:', err);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/admin/schools/:id/phone-number - Import a phone number (SIP or Twilio) for a school
+router.post('/schools/:id/phone-number', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const payload = req.body;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid school ID' });
+        }
+
+        const school = await School.findById(id);
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+
+        let result;
+        if (payload.sid && payload.token) {
+            // Twilio Import
+            console.log(`[Admin Phone] Importing Twilio number for school: ${school.name}`);
+            result = await importTwilioNumber(payload);
+        } else {
+            // SIP Trunk Import
+            console.log(`[Admin Phone] Importing SIP Trunk for school: ${school.name}`);
+            result = await importSipTrunk(payload);
+        }
+
+        if (!result) {
+            return res.status(500).json({ error: 'Failed to retrieve response from ElevenLabs API' });
+        }
+
+        if (result.alreadyExists) {
+            return res.status(409).json({ 
+                error: 'This phone number is already imported in ElevenLabs. If you intended to reassign it, please delete it from the other school or ElevenLabs dashboard first.' 
+            });
+        }
+
+        const phoneNumberId = result.phone_number_id;
+        if (!phoneNumberId) {
+            return res.status(500).json({ error: 'Failed to retrieve phone_number_id from ElevenLabs API' });
+        }
+
+        // Save to School document
+        school.agentPhoneNumberId = phoneNumberId;
+        school.aiNumber = payload.phone_number;
+        
+        // Persist Twilio credentials if provided
+        if (payload.sid && payload.token) {
+            school.twilioSid = payload.sid;
+            school.twilioAuthToken = payload.token;
+            school.twilioPhoneNumber = payload.phone_number;
+        }
+        
+        await school.save();
+
+        res.status(201).json({
+            message: 'Phone number imported and assigned successfully',
+            phone_number_id: phoneNumberId,
+            aiNumber: school.aiNumber
+        });
+    } catch (err) {
+        console.error('Import Phone Number error:', err);
+        res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+});
+
+// DELETE /api/admin/schools/:id/phone-number - Delete a phone number from a school and ElevenLabs
+router.delete('/schools/:id/phone-number', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid school ID' });
+        }
+
+        const school = await School.findById(id);
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+
+        if (!school.agentPhoneNumberId) {
+            return res.status(400).json({ error: 'No phone number assigned to this school' });
+        }
+
+        // 1. Delete from ElevenLabs
+        try {
+            await deletePhoneNumber(school.agentPhoneNumberId);
+        } catch (err) {
+            console.warn(`[Admin Phone Delete] Failed to delete from ElevenLabs (it might already be gone):`, err.message);
+        }
+
+        // 2. Clear from School document
+        const oldNumber = school.aiNumber;
+        school.agentPhoneNumberId = undefined;
+        school.aiNumber = '';
+        await school.save();
+
+        res.json({
+            success: true,
+            message: `Phone number ${oldNumber} deleted successfully`
+        });
+    } catch (err) {
+        console.error('Delete Phone Number error:', err);
+        res.status(500).json({ error: err.message || 'Internal server error' });
     }
 });
 

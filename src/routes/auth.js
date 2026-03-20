@@ -6,6 +6,7 @@ const User = require('../models/User');
 const School = require('../models/School');
 const Integration = require('../models/Integration');
 const { authMiddleware } = require('../middleware/auth');
+const { createSchoolAgent } = require('../utils/elevenlabs');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
@@ -125,6 +126,13 @@ router.post('/register', async (req, res) => {
             address: address || '',
             status: 'active'
         });
+
+        // 2b. Create ElevenLabs Agent for the school
+        const agentId = await createSchoolAgent(schoolName);
+        if (agentId) {
+            school.elevenlabsAgentId = agentId;
+            await school.save();
+        }
 
         // 3. Create the user
         const hashedPassword = bcrypt.hashSync(password, 10);
@@ -328,6 +336,13 @@ router.post('/google/callback', async (req, res) => {
                 status: 'active'
             });
 
+            // Create ElevenLabs Agent for the school
+            const agentId = await createSchoolAgent(schoolName);
+            if (agentId) {
+                school.elevenlabsAgentId = agentId;
+                await school.save();
+            }
+
             // Create user with Google OAuth
             user = await User.create({
                 email,
@@ -403,6 +418,13 @@ router.post('/google/complete-signup', async (req, res) => {
             address: address || '',
             status: 'active'
         });
+
+        // Create ElevenLabs Agent for the school
+        const agentId = await createSchoolAgent(schoolName);
+        if (agentId) {
+            school.elevenlabsAgentId = agentId;
+            await school.save();
+        }
 
         // Create user
         const user = await User.create({
