@@ -12,8 +12,22 @@ function formatTranscript(transcriptArray) {
         .map(entry => {
             const role = entry.role || entry.speaker || 'unknown';
             const text = entry.text || entry.content || entry.message || '';
-            return `${role}: ${text}`;
+            const toolCalls = Array.isArray(entry.tool_calls) && entry.tool_calls.length > 0 
+                ? entry.tool_calls.map(tc => `[Tool Call: ${tc.tool_name}(${tc.params_as_json || ''})]`).join('\n')
+                : '';
+            const toolResults = Array.isArray(entry.tool_results) && entry.tool_results.length > 0
+                ? entry.tool_results.map(tr => `[Tool Result: ${tr.tool_name} -> ${tr.result_value}]`).join('\n')
+                : '';
+                
+            let result = '';
+            if (role) result += `${role}: `;
+            if (text) result += text;
+            if (toolCalls) result += (text ? '\n' : '') + toolCalls;
+            if (toolResults) result += (text || toolCalls ? '\n' : '') + toolResults;
+            
+            return result;
         })
+        .filter(Boolean)
         .join('\n');
 }
 
