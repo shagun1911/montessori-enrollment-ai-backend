@@ -118,7 +118,6 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
             knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : [],
             language: 'en',
             system_prompt: fullPrompt,
-            // tool_ids: tool configuration is handled separately during school registration
         };
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');

@@ -164,7 +164,9 @@ router.post('/register', async (req, res) => {
                 const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
                 // Link tools to agent (both the school-specific and global time tool)
                 await patchAgentPrompt(agentId, {
-                    tool_ids: [toolId, globalTimeToolId]
+                    tool_ids: [toolId, globalTimeToolId],
+                    post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
+                    voice_id: "jqcCZkN6Knx8BJ5TBdYR",
                 });
                 console.log(`[Register] Tools linked to Agent ${agentId}:`, [toolId, globalTimeToolId]);
             }
@@ -403,7 +405,9 @@ router.post('/google/callback', async (req, res) => {
                 if (toolId) {
                     const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
                     await patchAgentPrompt(agentId, {
-                        tool_ids: [toolId, globalTimeToolId]
+                        tool_ids: [toolId, globalTimeToolId],
+                        post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
+                        voice_id: "jqcCZkN6Knx8BJ5TBdYR",
                     });
                 }
                 
@@ -515,7 +519,9 @@ router.post('/google/complete-signup', async (req, res) => {
             if (toolId) {
                 const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
                 await patchAgentPrompt(agentId, {
-                    tool_ids: [toolId, globalTimeToolId]
+                    tool_ids: [toolId, globalTimeToolId],
+                    post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
+                    voice_id: "jqcCZkN6Knx8BJ5TBdYR",
                 });
             }
             
