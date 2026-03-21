@@ -39,7 +39,6 @@ async function sendUpcomingReminders() {
             const school = await School.findById(booking.schoolId);
             if (!school) continue;
 
-            // SMS reminders removed (Twilio disabled)
 
             booking.reminderSent = true;
             await booking.save();
@@ -70,7 +69,6 @@ async function sendPostTourFollowups() {
             const school = await School.findById(booking.schoolId);
             if (!school) continue;
 
-            // Post-tour SMS follow-ups removed (Twilio disabled)
 
             booking.followupSent = true;
             await booking.save();

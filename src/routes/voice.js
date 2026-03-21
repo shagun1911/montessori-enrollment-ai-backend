@@ -21,7 +21,7 @@ function normalizePhone(s) {
  * Your AI voice agent (Vapi, Bland, Retell, or custom) should:
  *
  * 1. When a call starts: GET /api/voice/agent-config?to=+15551234567
- *    (use the Twilio "To" number). Response: schoolId, script, businessHours, formLink, etc.
+ *    (use the "To" number). Response: schoolId, script, businessHours, formLink, etc.
  *
  * 2. During the call: Use script to answer; collect parentName, phone, email, childAge, reason.
  *    If they want a tour, collect preferred date/time and send it in call-end as leadData.tourScheduledAt (ISO).
@@ -31,7 +31,7 @@ function normalizePhone(s) {
  *    We will: create call log, send SMS/email with form link, and if tourScheduledAt present, book tour in Google/Outlook.
  */
 
-// GET /api/voice/agent-config - No auth. Agent calls with the number that was dialed (Twilio "To").
+// GET /api/voice/agent-config - No auth. Agent calls with the number that was dialed ("To").
 // Query: to=+15551234567  OR  schoolId=507f1f77bcf86cd799439011
 router.get('/agent-config', async (req, res) => {
     try {
@@ -171,21 +171,6 @@ router.get('/booked-slots', async (req, res) => {
     }
 });
 
-// ── TWILIO INCOMING CALL WEBHOOK (For testing connections) ──
-// POST /api/voice/incoming
-router.post('/incoming', (req, res) => {
-    res.set('Content-Type', 'text/xml');
-    res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="Polly.Joanna-Neural">
-        Hello from your Childcare Enrollment AI Platform! The system is active and connected to Twilio.
-    </Say>
-    <Pause length="2"/>
-    <Say voice="Polly.Joanna-Neural">
-        Goodbye!
-    </Say>
-</Response>`);
-});
 
 // POST /api/voice/call-end - Called by AI agent when call completes
 router.post('/call-end', async (req, res) => {

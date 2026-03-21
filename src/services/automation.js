@@ -2,15 +2,7 @@ const School = require('../models/School');
 const Followup = require('../models/Followup');
 const { sendEmail } = require('./mailService');
 
-
-
-
-
-
-
-
 // Email transport logic moved to mailService.js
-
 async function triggerAutomation(schoolId, leadData) {
     const result = { smsSent: false, emailSent: false, smsError: null, emailError: null };
     try {
@@ -25,7 +17,6 @@ async function triggerAutomation(schoolId, leadData) {
             ? `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL}/inquiry/${school._id}`
             : `https://enrollmentai.com/inquiry/${school._id}`;
 
-        // SMS follow-up removed as per user request (Twilio disabled)
 
         // Email via SMTP (nodemailer)
         if (school.emailAutoFollowup && email) {
@@ -108,7 +99,6 @@ async function sendTourConfirmation(schoolId, tourBooking) {
             }
         }
 
-        // SMS Confirmation removed as per user request (Twilio disabled)
     } catch (err) {
         console.error('sendTourConfirmation error:', err);
     }

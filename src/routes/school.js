@@ -142,10 +142,12 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
         console.log('[Agent PATCH] =====================================');
         return response.data;
     } catch (err) {
-        console.error(`[Agent PATCH] Failed to update agent`);
-        console.error(`[Agent PATCH] Error Status:`, err.response?.status);
-        console.error(`[Agent PATCH] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
-        console.error(`[Agent PATCH] Error Message:`, err.message);
+        if (err?.response?.status !== 404) {
+            console.error(`[Agent PATCH] Failed to update agent`);
+            console.error(`[Agent PATCH] Error Status:`, err.response?.status);
+            console.error(`[Agent PATCH] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
+            console.error(`[Agent PATCH] Error Message:`, err.message);
+        }
         throw err;
     }
 }
@@ -809,9 +811,6 @@ router.put('/settings', async (req, res) => {
 
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
-        if (twilioSid !== undefined) school.twilioSid = twilioSid;
-        if (twilioAuthToken !== undefined) school.twilioAuthToken = twilioAuthToken;
-        if (twilioPhoneNumber !== undefined) school.twilioPhoneNumber = twilioPhoneNumber;
         if (smsAutoFollowup !== undefined) school.smsAutoFollowup = smsAutoFollowup;
         if (emailAutoFollowup !== undefined) school.emailAutoFollowup = emailAutoFollowup;
         if (smsTemplate !== undefined) school.smsTemplate = smsTemplate;
@@ -897,7 +896,15 @@ router.put('/settings', async (req, res) => {
                         );
                         console.log('[PUT /settings] Agent updated with full payload (KB and/or Persona changes)');
                     } catch (err) {
-                        console.error('[PUT /settings] Failed to update agent:', err);
+                        const status = err?.response?.status;
+                        const detail = err?.response?.data?.detail || err?.message || 'Unknown error';
+                        if (status === 404) {
+                            // Agent no longer exists — clear the stored ID so we don't keep retrying
+                            school.elevenlabsAgentId = '';
+                            console.warn(`[PUT /settings] ElevenLabs agent (${agentId}) not found — clearing stored Agent ID. Please set a valid Agent ID in Settings.`);
+                        } else {
+                            console.error(`[PUT /settings] Failed to update agent: [${status}] ${detail}`);
+                        }
                     }
                 }
             } else {
@@ -1190,7 +1197,7 @@ router.post('/test-followup', async (req, res) => {
             });
         }
 
-        const errorMessage = errors.length > 0 ? errors.join(' ') : 'Send failed. Enable follow-ups in Settings and save Twilio/SMTP.';
+        const errorMessage = errors.length > 0 ? errors.join(' ') : 'Send failed. Enable follow-ups in Settings and save SMTP settings.';
         return res.status(400).json({ error: errorMessage });
     } catch (err) {
         console.error('Test followup error:', err);
