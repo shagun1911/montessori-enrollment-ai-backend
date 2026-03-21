@@ -2,13 +2,6 @@ const School = require('../models/School');
 const Followup = require('../models/Followup');
 const { sendEmail } = require('./mailService');
 
-function getTwilioClient(sid, authToken) {
-    try {
-        return require('twilio')(sid, authToken);
-    } catch (e) {
-        return null;
-    }
-}
 
 
 
@@ -32,49 +25,7 @@ async function triggerAutomation(schoolId, leadData) {
             ? `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL}/inquiry/${school._id}`
             : `https://enrollmentai.com/inquiry/${school._id}`;
 
-        // SMS via Twilio
-        if (school.smsAutoFollowup && school.twilioSid && school.twilioAuthToken && school.twilioPhoneNumber && phone) {
-            const smsMessage = (school.smsTemplate || '')
-                .replace(/\{parent_name\}/g, parentName || 'Parent')
-                .replace(/\{school_name\}/g, school.name)
-                .replace(/\{form_link\}/g, formLink);
-
-            let status = 'pending';
-            const client = getTwilioClient(school.twilioSid, school.twilioAuthToken);
-            if (client) {
-                try {
-                    await client.messages.create({
-                        body: smsMessage,
-                        from: school.twilioPhoneNumber,
-                        to: phone,
-                    });
-                    status = 'sent';
-                    result.smsSent = true;
-                } catch (err) {
-                    console.error('[SMS Automation] Twilio error:', err.message);
-                    status = 'failed';
-                    result.smsError = err.message || String(err.code || 'SMS failed');
-                }
-            } else {
-                result.smsError = 'Twilio not configured. Check Account SID, Auth Token, and install twilio package.';
-            }
-
-
-
-
-
-            
-            await Followup.create({
-                schoolId,
-                leadName: parentName || 'Unknown',
-                type: 'SMS',
-                status,
-                message: smsMessage,
-                recipient: phone,
-            });
-        } else if (phone && (!school.smsAutoFollowup || !school.twilioPhoneNumber)) {
-            result.smsError = 'Enable "Send SMS follow-up" in Settings and add Twilio phone number, then Save.';
-        }
+        // SMS follow-up removed as per user request (Twilio disabled)
 
         // Email via SMTP (nodemailer)
         if (school.emailAutoFollowup && email) {
@@ -157,35 +108,7 @@ async function sendTourConfirmation(schoolId, tourBooking) {
             }
         }
 
-        // 2. Send SMS Confirmation (Optional/Immediate)
-        if (phone && school.smsAutoFollowup && school.twilioSid && school.twilioPhoneNumber) {
-            const smsBody = (school.tourReminderSmsTemplate || '')
-                .replace(/\{parent_name\}/g, parentName || 'Parent')
-                .replace(/\{school_name\}/g, school.name)
-                .replace(/\{tour_date\}/g, tourDateStr);
-
-            const client = getTwilioClient(school.twilioSid, school.twilioAuthToken);
-            if (client) {
-                try {
-                    await client.messages.create({
-                        body: smsBody,
-                        from: school.twilioPhoneNumber,
-                        to: phone,
-                    });
-                    
-                    await Followup.create({
-                        schoolId,
-                        leadName: parentName || 'Unknown',
-                        type: 'SMS',
-                        status: 'sent',
-                        message: smsBody,
-                        recipient: phone,
-                    });
-                } catch (err) {
-                    console.error('[Tour Confirmation SMS] Error:', err.message);
-                }
-            }
-        }
+        // SMS Confirmation removed as per user request (Twilio disabled)
     } catch (err) {
         console.error('sendTourConfirmation error:', err);
     }

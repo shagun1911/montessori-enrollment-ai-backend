@@ -39,10 +39,7 @@ async function sendUpcomingReminders() {
             const school = await School.findById(booking.schoolId);
             if (!school) continue;
 
-            const { sendTourConfirmation } = require('./automation'); // Avoid circular if any
-            // Reuse the confirmation logic which includes SMS template
-            // We can customize it if needed, but for now we'll trigger a simplified reminder
-            await sendReminderSms(school, booking);
+            // SMS reminders removed (Twilio disabled)
 
             booking.reminderSent = true;
             await booking.save();
@@ -73,7 +70,7 @@ async function sendPostTourFollowups() {
             const school = await School.findById(booking.schoolId);
             if (!school) continue;
 
-            await sendFollowupMessage(school, booking);
+            // Post-tour SMS follow-ups removed (Twilio disabled)
 
             booking.followupSent = true;
             await booking.save();
@@ -83,72 +80,5 @@ async function sendPostTourFollowups() {
     }
 }
 
-async function sendReminderSms(school, booking) {
-    if (!booking.phone || !school.twilioSid || !school.twilioPhoneNumber) return;
-
-    const { getTwilioClient } = require('./automation');
-    const client = getTwilioClient(school.twilioSid, school.twilioAuthToken);
-    if (!client) return;
-
-    const tourDateStr = new Date(booking.scheduledAt).toLocaleString('en-US', {
-        dateStyle: 'full',
-        timeStyle: 'short',
-        timeZone: school.timezone || 'UTC'
-    });
-
-    const body = (school.tourReminderSmsTemplate || 'Hi {parent_name}, reminder for your tour at {school_name} tomorrow at {tour_date}!')
-        .replace(/\{parent_name\}/g, booking.parentName || 'Parent')
-        .replace(/\{school_name\}/g, school.name)
-        .replace(/\{tour_date\}/g, tourDateStr);
-
-    try {
-        await client.messages.create({
-            body,
-            from: school.twilioPhoneNumber,
-            to: booking.phone
-        });
-        
-        await Followup.create({
-            schoolId: school._id,
-            leadName: booking.parentName,
-            type: 'SMS',
-            status: 'sent',
-            message: `[Reminder] ${body}`,
-            recipient: booking.phone
-        });
-    } catch (err) {
-        console.error('[Reminder Service] SMS failed:', err.message);
-    }
-}
-
-async function sendFollowupMessage(school, booking) {
-    // Send a "Thanks for visiting" text
-    if (!booking.phone || !school.twilioSid || !school.twilioPhoneNumber) return;
-
-    const { getTwilioClient } = require('./automation');
-    const client = getTwilioClient(school.twilioSid, school.twilioAuthToken);
-    if (!client) return;
-
-    const body = `Hi ${booking.parentName || 'Parent'}, thank you for visiting ${school.name} yesterday! We hope you enjoyed the tour. Let us know if you have any further questions.`;
-
-    try {
-        await client.messages.create({
-            body,
-            from: school.twilioPhoneNumber,
-            to: booking.phone
-        });
-        
-        await Followup.create({
-            schoolId: school._id,
-            leadName: booking.parentName,
-            type: 'SMS',
-            status: 'sent',
-            message: `[Follow-up] ${body}`,
-            recipient: booking.phone
-        });
-    } catch (err) {
-        console.error('[Reminder Service] Post-tour follow-up failed:', err.message);
-    }
-}
 
 module.exports = { initReminderService };

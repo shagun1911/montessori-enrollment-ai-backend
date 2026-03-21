@@ -13,7 +13,7 @@ const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
 const PhoneNumber = require('../models/PhoneNumber');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
-const { importSipTrunk, importTwilioNumber, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
+const { importSipTrunk, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
 
 const router = express.Router();
 
@@ -296,15 +296,11 @@ router.get('/phone-numbers', async (req, res) => {
 router.post('/phone-numbers', async (req, res) => {
     try {
         const payload = req.body;
+        console.log('[Admin Phone Import] Request Body:', JSON.stringify(payload, null, 2));
         let result;
 
-        if (payload.sid && payload.token) {
-            console.log(`[Admin Phone] Importing Twilio number: ${payload.phone_number}`);
-            result = await importTwilioNumber(payload);
-        } else {
-            console.log(`[Admin Phone] Importing SIP Trunk: ${payload.phone_number}`);
-            result = await importSipTrunk(payload);
-        }
+        console.log(`[Admin Phone] Importing SIP Trunk: ${payload.phone_number}`);
+        result = await importSipTrunk(payload);
 
         if (!result || !result.phone_number_id) {
             if (result?.alreadyExists) {
@@ -316,14 +312,8 @@ router.post('/phone-numbers', async (req, res) => {
         const newNum = await PhoneNumber.create({
             phone_number_id: result.phone_number_id,
             phone_number: payload.phone_number,
-            provider: (payload.sid && payload.token) ? 'twilio' : 'sip_trunk',
+            provider: 'sip_trunk',
             label: payload.label || 'Imported Number',
-            metadata: {
-                sid: payload.sid,
-                token: payload.token,
-                sip_address: payload.sip_address,
-                sip_username: payload.sip_username
-            }
         });
 
         res.status(201).json(newNum);
@@ -367,7 +357,7 @@ router.delete('/phone-numbers/:id', async (req, res) => {
 router.post('/schools/:id/assign-number', async (req, res) => {
     try {
         const { id } = req.params;
-        const { phoneNumberId } = req.body; 
+        const { phoneNumberId } = req.body;
 
         console.log(`[Assign Phone] Request received for School: ${id}, PhoneNumber Doc: ${phoneNumberId}`);
 
@@ -394,13 +384,6 @@ router.post('/schools/:id/assign-number', async (req, res) => {
         // 2. Assign new number
         school.aiNumber = phoneNum.phone_number;
         school.agentPhoneNumberId = phoneNum.phone_number_id;
-        
-        // If it's a twilio number, sync credentials to school for SMS etc.
-        if (phoneNum.provider === 'twilio') {
-            school.twilioSid = phoneNum.metadata?.sid || '';
-            school.twilioAuthToken = phoneNum.metadata?.token || '';
-            school.twilioPhoneNumber = phoneNum.phone_number;
-        }
 
         await school.save();
 

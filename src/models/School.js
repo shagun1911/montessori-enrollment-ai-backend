@@ -11,10 +11,6 @@ const schoolSchema = new mongoose.Schema({
     systemPrompt: { type: String, default: '' }, // System prompt for agent configuration
     businessHoursStart: { type: String, default: '09:00' },
     businessHoursEnd: { type: String, default: '17:00' },
-    // Twilio
-    twilioSid: { type: String, default: '' },
-    twilioAuthToken: { type: String, default: '' },
-    twilioPhoneNumber: { type: String, default: '' },
     // Automation
     smsAutoFollowup: { type: Boolean, default: false },
     emailAutoFollowup: { type: Boolean, default: false },

@@ -367,7 +367,7 @@ async function createSchoolAgent(schoolName, knowledgeBaseId = null, toolIds = [
         const url = `${baseUrl}/api/v1/agents`;
         const personaPrompt = NORA_SYSTEM_PROMPT_TEMPLATE.replace(/{{SCHOOL_NAME}}/g, schoolName);
         const fullPrompt = `${personaPrompt}\n\n${APPOINTMENT_AGENT_PROMPT}`;
-        
+
         // Ensure global time tool is included if any tools are passed, or as default
         const finalToolIds = Array.isArray(toolIds) && toolIds.length > 0
             ? [...new Set([...toolIds, GLOBAL_TIME_TOOL_ID])]
@@ -419,11 +419,21 @@ async function importSipTrunk(payload) {
     try {
         const url = `${baseUrl}/api/v1/phone-numbers/sip-trunk`;
         console.log(`[Agent SIP] POST ${url}`);
-        
-        // Ensure provider is set
-        if (!payload.provider) payload.provider = 'sip_trunk';
 
-        const response = await axios.post(url, payload, {
+        // Construct the correct ElevenLabs SIP payload
+        const sipPayload = {
+            phone_number: payload.phone_number,
+            label: payload.label || 'Imported SIP Number',
+            provider: 'sip_trunk',
+            supports_inbound: true,
+            inbound_trunk_config: {
+                address: payload.sip_address || 'sip.rtc.elevenlabs.io:5060'
+            }
+        };
+
+        console.log(`[Agent SIP] Payload:`, JSON.stringify(sipPayload, null, 2));
+
+        const response = await axios.post(url, sipPayload, {
             headers: {
                 'Content-Type': 'application/json',
                 ...(process.env.ELEVENLABS_API_KEY && { 'Authorization': `Bearer ${process.env.ELEVENLABS_API_KEY}` })
@@ -444,38 +454,6 @@ async function importSipTrunk(payload) {
     }
 }
 
-async function importTwilioNumber(payload) {
-    const baseUrl = process.env.ELEVENLABS_API_URL;
-    if (!baseUrl) {
-        console.warn('[Agent Twilio] ELEVENLABS_API_URL not configured');
-        return null;
-    }
-
-    try {
-        const url = `${baseUrl}/api/v1/phone-numbers`;
-        console.log(`[Agent Twilio] POST ${url}`);
-        
-        const response = await axios.post(url, payload, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...(process.env.ELEVENLABS_API_KEY && { 'Authorization': `Bearer ${process.env.ELEVENLABS_API_KEY}` })
-            }
-        });
-
-        console.log(`[Agent Twilio] Status: ${response.status}`);
-        return { phone_number_id: response.data?.phone_number_id || null };
-    } catch (err) {
-        if (err.response?.status === 409) {
-            console.warn(`[Agent Twilio] Phone number already exists in ElevenLabs`);
-            return { alreadyExists: true };
-        }
-        console.error(`[Agent Twilio] Failed to import Twilio number`);
-        console.error(`[Agent Twilio] Error Status:`, err.response?.status);
-        console.error(`[Agent Twilio] Error Data:`, JSON.stringify(err.response?.data || {}, null, 2));
-        throw new Error(err.response?.data?.detail?.[0]?.msg || err.message);
-    }
-}
-
 async function updatePhoneNumber(phoneNumberId, payload) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
@@ -487,7 +465,7 @@ async function updatePhoneNumber(phoneNumberId, payload) {
         const url = `${baseUrl}/api/v1/phone-numbers/${phoneNumberId}`;
         console.log(`[Agent Phone Update] PATCH ${url}`);
         console.log(`[Agent Phone Update] Payload:`, JSON.stringify(payload, null, 2));
-        
+
         const response = await axios.patch(url, payload, {
             headers: {
                 'Content-Type': 'application/json',
@@ -515,7 +493,7 @@ async function deletePhoneNumber(phoneNumberId) {
     try {
         const url = `${baseUrl}/api/v1/phone-numbers/${phoneNumberId}`;
         console.log(`[Agent SIP Delete] DELETE ${url}`);
-        
+
         const response = await axios.delete(url, {
             headers: {
                 'accept': 'application/json',
@@ -651,7 +629,6 @@ async function patchAgentPrompt(agentId, payload) {
 module.exports = {
     createSchoolAgent,
     importSipTrunk,
-    importTwilioNumber,
     deletePhoneNumber,
     updatePhoneNumber,
     registerTool,

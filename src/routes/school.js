@@ -732,9 +732,6 @@ router.get('/settings', async (req, res) => {
             systemPrompt: school.systemPrompt || '',
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
-            twilioSid: school.twilioSid || '',
-            twilioAuthToken: school.twilioAuthToken || '',
-            twilioPhoneNumber: school.twilioPhoneNumber || '',
             smsAutoFollowup: school.smsAutoFollowup || false,
             emailAutoFollowup: school.emailAutoFollowup || false,
             smsTemplate: school.smsTemplate || 'Thank you for your interest in our school! Please complete our inquiry form here: {form_link}',
@@ -777,7 +774,6 @@ router.put('/settings', async (req, res) => {
         const {
             name, address, timezone, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
             businessHoursStart, businessHoursEnd,
-            twilioSid, twilioAuthToken, twilioPhoneNumber,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
             qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId,
             tourConfirmationEmailTemplate, tourReminderSmsTemplate

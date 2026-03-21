@@ -44,13 +44,13 @@ router.get('/agent-config', async (req, res) => {
         if (!school && to) {
             const normalizedTo = normalizePhone(to);
             if (normalizedTo) {
-                const all = await School.find({}).select('name script businessHoursStart businessHoursEnd language routingNumber escalationNumber twilioPhoneNumber aiNumber').lean();
-                school = all.find(s => normalizePhone(s.twilioPhoneNumber) === normalizedTo || normalizePhone(s.aiNumber) === normalizedTo) || null;
+                const all = await School.find({}).select('name script businessHoursStart businessHoursEnd language routingNumber escalationNumber aiNumber').lean();
+                school = all.find(s => normalizePhone(s.aiNumber) === normalizedTo) || null;
             }
         }
 
         if (!school) {
-            return res.status(404).json({ error: 'School not found for this number. Set twilioPhoneNumber or aiNumber in Settings.' });
+            return res.status(404).json({ error: 'School not found for this number. Set aiNumber in Settings.' });
         }
 
         const formLink = process.env.FORM_BASE_URL
@@ -196,7 +196,7 @@ router.post('/call-end', async (req, res) => {
             return res.status(400).json({ error: 'schoolId is required' });
         }
 
-        const school = await School.findById(schoolId).select('name adminEmail twilioPhoneNumber twilioSid twilioAuthToken smsAutoFollowup emailAutoFollowup smsTemplate emailTemplate').lean();
+        const school = await School.findById(schoolId).select('name adminEmail emailAutoFollowup emailTemplate').lean();
         if (!school) {
             return res.status(404).json({ error: 'School not found' });
         }
