@@ -801,7 +801,6 @@ A new call has been received and processed for ${school.name}.
 Call Details:
 - Caller Name/Number: ${callerNumber}
 - Call Duration: ${callDurationMin} min ${callDurationSec} sec
-- Conversation ID: ${webhook.conversation_id}
 - Call Recording: ${backendUrl}/api/school/calls/${webhook.conversation_id}/audio?token=${notificationToken}
 
 `;
