@@ -2,6 +2,7 @@ require('dotenv').config();
 const { google } = require('googleapis');
 const axios = require('axios');
 const mongoose = require('mongoose');
+const { pca } = require('../routes/integrations');
 const Integration = require('../models/Integration');
 const TourBooking = require('../models/TourBooking');
 
@@ -148,8 +149,8 @@ async function getGoogleBusySlots(integration, start, end) {
 
 async function getOutlookBusySlots(integration, start, end) {
     try {
-        const accessToken = integration.config?.accessToken;
-        if (!accessToken) return { busySlots: [], error: 'Outlook not authorized' };
+        const accessToken = await refreshOutlookToken(integration);
+        if (!accessToken) return { busySlots: [], error: 'Outlook not authorized or token expired' };
         const res = await axios.get(
             'https://graph.microsoft.com/v1.0/me/calendarView',
             {
@@ -456,9 +457,9 @@ async function createGoogleCalendarEvent(integration, { title, start, end, descr
 
 async function createOutlookCalendarEvent(integration, { title, start, end, description, parentEmail }) {
     try {
-        const accessToken = integration.config?.accessToken;
+        const accessToken = await refreshOutlookToken(integration);
         if (!accessToken) {
-            return { success: false, error: 'Outlook not authorized. Reconnect in Integrations.' };
+            return { success: false, error: 'Outlook not authorized or token expired. Reconnect in Integrations.' };
         }
 
         // Fetch school timezone and send local time so school calendar shows same time as parent
@@ -489,5 +490,55 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
         return { success: false, error: msg || 'Failed to create Outlook event' };
     }
 }
+
+/**
+ * Helper to ensure the Outlook token is valid, refreshing if needed using MSAL "acquireTokenSilent".
+ * Updates the database token if a refresh occurs.
+ */
+async function refreshOutlookToken(integration) {
+    if (!integration || integration.type !== 'outlook' || !integration.config) return null;
+
+    let accessToken = integration.config.accessToken;
+    const account = integration.config.account;
+
+    if (!account) return accessToken;
+
+    if (!pca) {
+        console.warn('[Calendar] MSAL not configured, returning existing token.');
+        return accessToken;
+    }
+
+    try {
+        const silentRequest = {
+            account: account,
+            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
+        };
+        const response = await pca.acquireTokenSilent(silentRequest);
+        
+        // If the token was refreshed, update the DB
+        if (response.accessToken && response.accessToken !== accessToken) {
+            accessToken = response.accessToken;
+            console.log(`[Calendar] Outlook tokens refreshed for school: ${integration.schoolId}`);
+            
+            await Integration.updateOne(
+                { _id: integration._id },
+                { 
+                    $set: { 
+                        'config.accessToken': accessToken,
+                        'config.account': response.account,
+                        'config.expiresOn': response.expiresOn,
+                    } 
+                }
+            );
+        }
+    } catch (error) {
+        console.error('[Calendar] MSAL acquireTokenSilent error (Token may be expired or revoked):', error.message);
+        // We will just let the existing accessToken be returned. The subsequent API call will fail natively.
+        // The user will see 'Lifetime validation failed, the token is expired' and will have to re-auth.
+    }
+
+    return accessToken;
+}
+
 
 module.exports = { createCalendarEvent, getBusySlots, getFreeSlots, isSlotAvailable, getBusinessHoursRange };

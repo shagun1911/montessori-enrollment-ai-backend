@@ -59,7 +59,7 @@ async function getOutlookAuthUrl(schoolId) {
         return null; // Not configured
     }
     const authCodeUrlParameters = {
-        scopes: ['user.read', 'calendars.readwrite', 'mail.send'],
+        scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
         redirectUri: process.env.OUTLOOK_REDIRECT_URI,
         state: schoolId.toString(),
         prompt: 'select_account',
@@ -151,7 +151,7 @@ router.get('/outlook/callback', async (req, res) => {
         const schoolId = state;
         const tokenRequest = {
             code,
-            scopes: ['user.read', 'calendars.readwrite', 'mail.send'],
+            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
             redirectUri: process.env.OUTLOOK_REDIRECT_URI,
         };
 
@@ -166,6 +166,8 @@ router.get('/outlook/callback', async (req, res) => {
                 config: {
                     account: response.account,
                     accessToken: response.accessToken,
+                    expiresOn: response.expiresOn,
+                    scopes: response.scopes,
                 },
             },
             { upsert: true }
@@ -182,4 +184,5 @@ module.exports = {
     router,
     getGoogleAuthUrl,
     getOutlookAuthUrl,
+    pca,
 };
