@@ -322,40 +322,80 @@ router.get('/dashboard', async (req, res) => {
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
-        // Calculate metrics from all calls (not just recent ones)
-        const totalCalls = calls.length;
-        const totalDurationSeconds = calls.reduce((acc, c) => acc + (c.duration || 0), 0);
+        // ── Period Filter ──────────────────────────────────────────────
+        const period = req.query.period || 'daily';
+        let periodMs;
+        let chartBars;
+        if (period === 'monthly') {
+            periodMs = 30 * 24 * 60 * 60 * 1000;
+            chartBars = 30;
+        } else if (period === 'weekly') {
+            periodMs = 7 * 24 * 60 * 60 * 1000;
+            chartBars = 7;
+        } else {
+            // daily
+            periodMs = 24 * 60 * 60 * 1000;
+            chartBars = 1; // show 24-hour bar chart (hourly)
+        }
+        const periodStart = new Date(Date.now() - periodMs);
+        console.log(`[DASHBOARD DEBUG] Handling period: ${period}, Start date: ${periodStart.toISOString()}`);
+
+        // Filter calls to the selected period
+        const periodCalls = calls.filter(c => new Date(c.timestamp) >= periodStart);
+        console.log(`[DASHBOARD DEBUG] Total calls: ${calls.length}, Period calls: ${periodCalls.length}`);
+
+        // Calculate metrics from period calls
+        const totalCalls = periodCalls.length;
+        const totalDurationSeconds = periodCalls.reduce((acc, c) => acc + (c.duration || 0), 0);
         const callMinutes = Math.floor(totalDurationSeconds / 60);
 
-        // Ensure toursBooked is accurate - count from TourBooking collection
-        const actualToursBooked = await TourBooking.countDocuments({ schoolId });
+        // Tours booked within the period
+        const actualToursBooked = await TourBooking.countDocuments({
+            schoolId,
+            scheduledAt: { $gte: periodStart }
+        });
 
-        // Chart Data (14 days)
+        // Chart Data
         const chartData = [];
-        const todayAtMidnight = new Date();
-        todayAtMidnight.setHours(0, 0, 0, 0);
+        const nowDate = new Date();
 
-        for (let i = 13; i >= 0; i--) {
-            const day = new Date(todayAtMidnight);
-            day.setDate(day.getDate() - i);
-            const nextDay = new Date(day);
-            nextDay.setDate(day.getDate() + 1);
-
-            const dayCalls = calls.filter(c => {
-                const t = new Date(c.timestamp);
-                return t >= day && t < nextDay;
-            });
-
-            chartData.push({
-                name: day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-                calls: dayCalls.length
-            });
+        if (period === 'daily') {
+            // 24 hourly buckets
+            for (let i = 23; i >= 0; i--) {
+                const bucketEnd = new Date(nowDate.getTime() - i * 60 * 60 * 1000);
+                const bucketStart = new Date(bucketEnd.getTime() - 60 * 60 * 1000);
+                const bucketCalls = calls.filter(c => {
+                    const t = new Date(c.timestamp);
+                    return t >= bucketStart && t < bucketEnd;
+                });
+                chartData.push({
+                    name: bucketEnd.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                    calls: bucketCalls.length
+                });
+            }
+        } else {
+            // Daily buckets for weekly (7) or monthly (30)
+            const todayAtMidnight = new Date();
+            todayAtMidnight.setHours(0, 0, 0, 0);
+            for (let i = chartBars - 1; i >= 0; i--) {
+                const day = new Date(todayAtMidnight);
+                day.setDate(day.getDate() - i);
+                const nextDay = new Date(day);
+                nextDay.setDate(day.getDate() + 1);
+                const dayCalls = calls.filter(c => {
+                    const t = new Date(c.timestamp);
+                    return t >= day && t < nextDay;
+                });
+                chartData.push({
+                    name: day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                    calls: dayCalls.length
+                });
+            }
         }
 
-        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const recentCalls = calls
-            .filter(c => new Date(c.timestamp) >= oneDayAgo)
-            .slice(0, 10)
+        // Recent calls: top 20 within selected period
+        const recentCalls = periodCalls
+            .slice(0, 20)
             .map(c => ({
                 id: c.id,
                 conversationId: c.conversationId || null,
@@ -380,9 +420,199 @@ router.get('/dashboard', async (req, res) => {
             chartData,
             recentCalls,
             adminEmailNotifications,
+            period,
         });
     } catch (err) {
         console.error('School dashboard error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/school/tour-bookings - All tour bookings for the school
+router.get('/tour-bookings', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const bookings = await TourBooking.find({ schoolId })
+            .sort({ scheduledAt: -1 })
+            .lean();
+        res.json(bookings.map(b => ({
+            id: b._id.toString(),
+            parentName: b.parentName || '',
+            phone: b.phone || '',
+            email: b.email || '',
+            childAge: b.childAge || '',
+            reason: b.reason || '',
+            scheduledAt: b.scheduledAt,
+            calendarProvider: b.calendarProvider || null,
+            calendarEmail: b.calendarEmail || '',
+            reminderSent: b.reminderSent || false,
+        })));
+    } catch (err) {
+        console.error('Tour bookings error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/school/inquiry-submissions - All inquiry form submissions
+router.get('/inquiry-submissions', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const submissions = await InquirySubmission.find({ schoolId })
+            .sort({ submittedAt: -1 })
+            .lean();
+        res.json(submissions.map(s => ({
+            id: s._id.toString(),
+            parentName: s.parentName || '',
+            email: s.email || '',
+            phone: s.phone || '',
+            answers: s.answers || [],
+            submittedAt: s.submittedAt,
+        })));
+    } catch (err) {
+        console.error('Inquiry submissions error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/school/daily-insights - Needs-attention calls + today's tour details
+router.get('/daily-insights', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const normalizePhone = (p) => (p || '').replace(/\D/g, '');
+        const schoolAiNumber = normalizePhone(school?.aiNumber || '');
+        const userToken = req.headers.authorization?.split(' ')[1] || '';
+        const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+
+        // Today boundaries (UTC)
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        // ── 1. Needs Attention: calls from today with no tour booked ──
+        const todayWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            received_at: { $gte: todayStart, $lte: todayEnd },
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        }).sort({ received_at: -1 }).lean();
+
+        const needsAttention = todayWebhooks
+            .filter(wh => !wh.tour_booking_detected)
+            .map(wh => ({
+                id: wh._id.toString(),
+                conversationId: wh.conversation_id,
+                callerName: wh.tour_booking_extracted?.name || 'Parent',
+                callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
+                summary: wh.summary || '',
+                timestamp: wh.metadata?.start_time_unix_secs
+                    ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                    : wh.received_at,
+                recordingUrl: wh.conversation_id
+                    ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
+                    : null,
+                duration: getCallDurationSeconds(wh),
+            }));
+
+        // ── 2. Today's Tours: full detail with questions from transcript ──
+        const todaysTourDocs = await TourBooking.find({
+            schoolId,
+            scheduledAt: { $gte: todayStart, $lte: todayEnd }
+        }).sort({ scheduledAt: 1 }).lean();
+
+        // Try to enrich each tour with the linked webhook (transcript/summary)
+        const todaysTours = await Promise.all(todaysTourDocs.map(async (tour) => {
+            let questionsAsked = [];
+            let highlights = '';
+            let callSummary = '';
+
+            // Find associated webhook by phone or callLogId
+            const tourPhone = normalizePhone(tour.phone);
+            const linkedWebhook = await ElevenLabsWebhook.findOne({
+                type: 'post_call_transcription',
+                $or: [
+                    { schoolId: schoolObjectId },
+                    { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                ],
+                $and: [
+                    tourPhone ? { 'metadata.phone_call.from_number': { $regex: tourPhone } } : { _id: { $exists: true } }
+                ]
+            }).sort({ received_at: -1 }).lean();
+
+            if (linkedWebhook) {
+                callSummary = linkedWebhook.summary || '';
+                // Highlights from summary or extracted notes
+                highlights = linkedWebhook.tour_booking_extracted?.notes || callSummary;
+                
+                // Aggressive Questions extraction (look for user questions in transcript)
+                if (Array.isArray(linkedWebhook.transcript)) {
+                    const userMsgs = linkedWebhook.transcript.filter(t => t.role === 'user');
+                    questionsAsked = userMsgs
+                        .map(t => (t.message || t.text || '').trim())
+                        .filter(msg => {
+                            const low = msg.toLowerCase();
+                            return msg.endsWith('?') || 
+                                   low.startsWith('what') || low.startsWith('how') || 
+                                   low.startsWith('can') || low.startsWith('do ') || 
+                                   low.startsWith('does ') || low.startsWith('is ') || 
+                                   low.startsWith('are ') || low.startsWith('tell me');
+                        })
+                        .slice(0, 10); // Capture more questions
+                }
+
+                // Expand a generic "book a tour" reason using keywords from summary/transcript
+                const fullText = (callSummary + ' ' + (linkedWebhook.transcript || []).map(t => t.message || '').join(' ')).toLowerCase();
+                let expandedReason = tour.reason || 'Enrollment Inquiry';
+                
+                const keywords = [
+                    { key: 'infant', label: 'Infant Room' },
+                    { key: 'toddler', label: 'Toddler Program' },
+                    { key: 'preschool', label: 'Preschool' },
+                    { key: 'pre-k', label: 'Pre-K' },
+                    { key: 'price', label: 'Pricing/Tuition' },
+                    { key: 'tuition', label: 'Pricing/Tuition' },
+                    { key: 'availability', label: 'Availability' },
+                    { key: 'waitlist', label: 'Waitlist Inquiry' },
+                    { key: 'curriculum', label: 'Curriculum' },
+                    { key: 'hours', label: 'Hours/Schedule' }
+                ];
+
+                const foundDetails = keywords.filter(kw => fullText.includes(kw.key)).map(kw => kw.label);
+                if (foundDetails.length > 0) {
+                    expandedReason = `${expandedReason} (${foundDetails.join(', ')})`;
+                }
+                tour.reason = expandedReason;
+
+                // If tour child info is missing, try to fill from webhook
+                if (!tour.childAge && linkedWebhook.tour_booking_extracted?.childAge) {
+                    tour.childAge = linkedWebhook.tour_booking_extracted.childAge;
+                }
+            }
+
+            return {
+                id: tour._id.toString(),
+                parentName: tour.parentName || linkedWebhook?.tour_booking_extracted?.name || 'Parent',
+                phone: tour.phone || linkedWebhook?.metadata?.phone_call?.from_number || '',
+                email: tour.email || linkedWebhook?.tour_booking_extracted?.email || '',
+                childAge: tour.childAge || '',
+                reason: tour.reason,
+                scheduledAt: tour.scheduledAt,
+                calendarProvider: tour.calendarProvider || null,
+                questionsAsked,
+                highlights,
+                callSummary,
+                reminderSent: tour.reminderSent || false,
+            };
+        }));
+
+        res.json({ needsAttention, todaysTours });
+    } catch (err) {
+        console.error('Daily insights error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
