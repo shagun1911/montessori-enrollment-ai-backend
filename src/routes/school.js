@@ -741,6 +741,7 @@ router.get('/settings', async (req, res) => {
             knowledgeBaseDocumentId: school.knowledgeBaseDocumentId || '',
             adminEmail: school.adminEmail || '',
             preferredCalendar: school.preferredCalendar || 'google',
+            preferredEmailProvider: school.preferredEmailProvider || 'google',
             elevenlabsAgentId: school.elevenlabsAgentId || '',
             tourConfirmationEmailTemplate: school.tourConfirmationEmailTemplate || '',
             tourReminderSmsTemplate: school.tourReminderSmsTemplate || '',
@@ -776,7 +777,7 @@ router.put('/settings', async (req, res) => {
             name, address, timezone, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
             businessHoursStart, businessHoursEnd,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
-            qaPairs, preferredCalendar, adminEmail, elevenlabsAgentId,
+            qaPairs, preferredCalendar, preferredEmailProvider, adminEmail, elevenlabsAgentId,
             tourConfirmationEmailTemplate, tourReminderSmsTemplate
         } = req.body;
 
@@ -816,6 +817,7 @@ router.put('/settings', async (req, res) => {
         if (smsTemplate !== undefined) school.smsTemplate = smsTemplate;
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
+        if (preferredEmailProvider !== undefined) school.preferredEmailProvider = preferredEmailProvider;
         if (adminEmail !== undefined) school.adminEmail = adminEmail;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (tourConfirmationEmailTemplate !== undefined) school.tourConfirmationEmailTemplate = tourConfirmationEmailTemplate;

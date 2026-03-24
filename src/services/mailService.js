@@ -3,6 +3,7 @@ const axios = require('axios');
 const nodemailer = require('nodemailer');
 const Integration = require('../models/Integration');
 const School = require('../models/School');
+const { refreshOutlookToken } = require('./calendarService');
 
 /**
  * Creates a Google OAuth2 client for a school's integration.
@@ -29,34 +30,37 @@ async function sendEmail(schoolId, opts) {
     const { to, subject, text, html, attachments } = opts;
     
     try {
-        const integrations = await Integration.find({ schoolId, connected: true }).lean();
-        
-        // 1. Try Google/Gmail
-        const googleIntegration = integrations.find(i => i.type === 'google');
-        if (googleIntegration && googleIntegration.config?.tokens) {
+        const [school, integrations] = await Promise.all([
+            School.findById(schoolId).select('preferredEmailProvider').lean(),
+            Integration.find({ schoolId, connected: true }).lean()
+        ]);
+
+        const preferred = school?.preferredEmailProvider || 'google';
+        // Define priority order based on preference
+        const providers = preferred === 'outlook' ? ['outlook', 'google'] : ['google', 'outlook'];
+
+        for (const type of providers) {
+            const integration = integrations.find(i => i.type === type);
+            if (!integration) continue;
+
             try {
-                return await sendViaGmail(googleIntegration, opts);
+                if (type === 'google' && integration.config?.tokens) {
+                    return await sendViaGmail(integration, opts);
+                } else if (type === 'outlook' && integration.config) {
+                    return await sendViaOutlook(integration, opts);
+                }
             } catch (err) {
-                console.error('[MailService] Gmail send failed, falling back:', err.message);
+                console.warn(`[MailService] Send via ${type} failed for school ${schoolId}:`, err.message);
+                // Continue to next provider in loop
             }
         }
         
-        // 2. Try Outlook
-        const outlookIntegration = integrations.find(i => i.type === 'outlook');
-        if (outlookIntegration && outlookIntegration.config?.accessToken) {
-            try {
-                return await sendViaOutlook(outlookIntegration, opts);
-            } catch (err) {
-                console.error('[MailService] Outlook send failed, falling back:', err.message);
-            }
-        }
-        
-        // 3. Fallback to SMTP
+        // 3. Last fallback to system SMTP if configured
+        console.log(`[MailService] No suitable integration found or all failed for school ${schoolId}, falling back to SMTP.`);
         return await sendViaSMTP(opts);
 
     } catch (err) {
         console.error('[MailService] Unified send error:', err.message);
-        // Last resort: try SMTP even if integration lookup failed
         return await sendViaSMTP(opts);
     }
 }
@@ -136,7 +140,8 @@ async function sendViaGmail(integration, { to, subject, text, html, attachments 
 }
 
 async function sendViaOutlook(integration, { to, subject, text, html, attachments }) {
-    const accessToken = integration.config.accessToken;
+    const accessToken = await refreshOutlookToken(integration);
+    if (!accessToken) throw new Error('Outlook token refresh failed');
     const message = {
         subject: subject,
         body: {

@@ -541,4 +541,4 @@ async function refreshOutlookToken(integration) {
 }
 
 
-module.exports = { createCalendarEvent, getBusySlots, getFreeSlots, isSlotAvailable, getBusinessHoursRange };
+module.exports = { createCalendarEvent, getBusySlots, getFreeSlots, isSlotAvailable, getBusinessHoursRange, refreshOutlookToken };
