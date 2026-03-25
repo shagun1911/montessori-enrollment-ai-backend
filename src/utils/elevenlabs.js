@@ -503,6 +503,7 @@ async function updatePhoneNumber(phoneNumberId, payload) {
         });
 
         console.log(`[Agent Phone Update] Status: ${response.status}`);
+        console.log(`[Agent Phone Update] Response Data:`, JSON.stringify(response.data, null, 2));
         return response.data;
     } catch (err) {
         console.error(`[Agent Phone Update] Failed to update phone number`);
