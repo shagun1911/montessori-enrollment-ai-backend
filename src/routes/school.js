@@ -177,21 +177,6 @@ router.get('/dashboard', async (req, res) => {
             leadName: 'Admin Notification'
         };
 
-        const adminEmails = await Followup.find(adminEmailQuery)
-            .sort({ createdAt: -1 })
-            .limit(20)
-            .lean();
-
-        adminEmailNotifications = adminEmails.map(email => ({
-            id: email._id.toString(),
-            recipient: email.recipient,
-            status: email.status,
-            subject: email.message?.split('\n')[0] || 'New Call Received',
-            sentAt: email.createdAt || email.updatedAt,
-            conversationId: email.message?.match(/Conversation ID: ([^\n\s]+)/)?.[1] || null,
-            callerNumber: email.message?.match(/(?:Caller Name\/Number|Caller Number): ([^\n]+)/)?.[1] || null,
-        }));
-
         // Helper to consistently normalize phones for matching
         const normalizePhone = (phone) => {
             if (!phone) return '';
@@ -202,54 +187,101 @@ router.get('/dashboard', async (req, res) => {
         const userToken = req.headers.authorization?.split(' ')[1] || '';
         const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
 
-        // ── STEP 1: Fetch VoiceAI Logs (SIP) ──────────
-        let voiceAiCalls = [];
-        if (schoolAiNumber) {
-            try {
-                const digits = schoolAiNumber;
-                const normalizedNumber = `+${digits}`;
-                const participantId = `sip_${normalizedNumber}`;
-
-                const bennyDb = mongoose.connection.useDb('benny');
-                const collection = bennyDb.collection('voiceAI');
-
-                const rawLogs = await collection.find({ participant_id: participantId })
-                    .sort({ created_at: -1 })
-                    .toArray();
-
-                voiceAiCalls = rawLogs.map(log => ({
-                    id: log._id.toString(),
-                    callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
-                    callerName: 'Parent',
-                    duration: log.duration_seconds || 0,
-                    timestamp: log.created_at || log.timestamp || new Date(),
-                    recordingUrl: log.recording_url || null,
-                    callType: 'inquiry',
-                    summary: '',
-                    tourBookingDetected: false,
-                    tourBookingDate: null,
-                    aiProcessed: false
-                }));
-            } catch (err) {
-                console.error('[Dashboard] VoiceAI fetch error:', err);
-            }
+        const period = req.query.period || 'daily';
+        let periodMs;
+        let chartBars;
+        if (period === 'monthly') {
+            periodMs = 30 * 24 * 60 * 60 * 1000;
+            chartBars = 30;
+        } else if (period === 'weekly') {
+            periodMs = 7 * 24 * 60 * 60 * 1000;
+            chartBars = 7;
+        } else {
+            // daily
+            periodMs = 24 * 60 * 60 * 1000;
+            chartBars = 1; // show 24-hour bar chart (hourly)
         }
+        const periodStart = new Date(Date.now() - periodMs);
+        console.log(`[DASHBOARD DEBUG] Handling period: ${period}, Start date: ${periodStart.toISOString()}`);
 
-        // ── STEP 2: Fetch Scoped Webhooks ──────────
-        // Search by both discrete schoolId (best) and unique AI number (resilient fallback)
-        // Increased limit to 500 to capture more historical data
-        const schoolWebhooks = await ElevenLabsWebhook.find({
-            type: 'post_call_transcription',
-            $or: [
-                { schoolId: schoolObjectId },
-                {
-                    'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' },
-                },
-                {
-                    'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
+        const [
+            adminEmails,
+            voiceAiCalls,
+            schoolWebhooks,
+            callLogEntries,
+            actualToursBooked,
+        ] = await Promise.all([
+            Followup.find(adminEmailQuery)
+                .sort({ createdAt: -1 })
+                .limit(20)
+                .lean(),
+            (async () => {
+                let voiceAiCallsInner = [];
+                if (schoolAiNumber) {
+                    try {
+                        const digits = schoolAiNumber;
+                        const normalizedNumber = `+${digits}`;
+                        const participantId = `sip_${normalizedNumber}`;
+
+                        const bennyDb = mongoose.connection.useDb('benny');
+                        const collection = bennyDb.collection('voiceAI');
+
+                        const rawLogs = await collection.find({ participant_id: participantId })
+                            .sort({ created_at: -1 })
+                            .toArray();
+
+                        voiceAiCallsInner = rawLogs.map(log => ({
+                            id: log._id.toString(),
+                            callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
+                            callerName: 'Parent',
+                            duration: log.duration_seconds || 0,
+                            timestamp: log.created_at || log.timestamp || new Date(),
+                            recordingUrl: log.recording_url || null,
+                            callType: 'inquiry',
+                            summary: '',
+                            tourBookingDetected: false,
+                            tourBookingDate: null,
+                            aiProcessed: false
+                        }));
+                    } catch (err) {
+                        console.error('[Dashboard] VoiceAI fetch error:', err);
+                    }
                 }
-            ]
-        }).sort({ received_at: -1 }).limit(500).lean();
+                return voiceAiCallsInner;
+            })(),
+            // Search by both discrete schoolId (best) and unique AI number (resilient fallback)
+            // Increased limit to 500 to capture more historical data
+            ElevenLabsWebhook.find({
+                type: 'post_call_transcription',
+                $or: [
+                    { schoolId: schoolObjectId },
+                    {
+                        'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' },
+                    },
+                    {
+                        'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
+                    }
+                ]
+            }).sort({ received_at: -1 }).limit(500).lean(),
+            CallLog.find({ schoolId: schoolObjectId })
+                .sort({ createdAt: -1 })
+                .limit(500)
+                .lean(),
+            TourBooking.countDocuments({
+                schoolId,
+                scheduledAt: { $gte: periodStart }
+            }),
+        ]);
+
+        adminEmailNotifications = adminEmails.map(email => ({
+            id: email._id.toString(),
+            recipient: email.recipient,
+            status: email.status,
+            subject: email.message?.split('\n')[0] || 'New Call Received',
+            sentAt: email.createdAt || email.updatedAt,
+            conversationId: email.message?.match(/Conversation ID: ([^\n\s]+)/)?.[1] || null,
+            callerNumber: email.message?.match(/(?:Caller Name\/Number|Caller Number): ([^\n]+)/)?.[1] || null,
+        }));
 
         const webhookCalls = schoolWebhooks.map(wh => {
             const callTimestamp = wh.metadata?.start_time_unix_secs
@@ -274,12 +306,6 @@ router.get('/dashboard', async (req, res) => {
                 aiProcessed: wh.ai_processed || false
             };
         });
-
-        // ── STEP 2.5: Fetch CallLog entries (New/Manual Syncs) ──────────
-        const callLogEntries = await CallLog.find({ schoolId: schoolObjectId })
-            .sort({ createdAt: -1 })
-            .limit(500)
-            .lean();
 
         const callLogCalls = callLogEntries.map(cl => ({
             id: cl._id.toString(),
@@ -326,24 +352,6 @@ router.get('/dashboard', async (req, res) => {
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
-        // ── Period Filter ──────────────────────────────────────────────
-        const period = req.query.period || 'daily';
-        let periodMs;
-        let chartBars;
-        if (period === 'monthly') {
-            periodMs = 30 * 24 * 60 * 60 * 1000;
-            chartBars = 30;
-        } else if (period === 'weekly') {
-            periodMs = 7 * 24 * 60 * 60 * 1000;
-            chartBars = 7;
-        } else {
-            // daily
-            periodMs = 24 * 60 * 60 * 1000;
-            chartBars = 1; // show 24-hour bar chart (hourly)
-        }
-        const periodStart = new Date(Date.now() - periodMs);
-        console.log(`[DASHBOARD DEBUG] Handling period: ${period}, Start date: ${periodStart.toISOString()}`);
-
         // Filter calls to the selected period
         const periodCalls = calls.filter(c => new Date(c.timestamp) >= periodStart);
         console.log(`[DASHBOARD DEBUG] Total calls: ${calls.length}, Period calls: ${periodCalls.length}`);
@@ -365,12 +373,6 @@ router.get('/dashboard', async (req, res) => {
 
         // Action Needed (Missed Tours / Needs Attention) - Period-based
         const actionNeeded = periodCalls.filter(c => !c.tourBookingDetected).length;
-
-        // Tours booked within the period
-        const actualToursBooked = await TourBooking.countDocuments({
-            schoolId,
-            scheduledAt: { $gte: periodStart }
-        });
 
         // Chart Data
         const chartData = [];
