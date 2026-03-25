@@ -262,7 +262,12 @@ router.get('/dashboard', async (req, res) => {
                         'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
                     }
                 ]
-            }).sort({ received_at: -1 }).limit(500).lean(),
+            })
+                // Omit raw_payload (large debug blob) and audio; dashboard only needs metadata + transcript + summary fields
+                .select('-raw_payload -audio_base64')
+                .sort({ received_at: -1 })
+                .limit(500)
+                .lean(),
             CallLog.find({ schoolId: schoolObjectId })
                 .sort({ createdAt: -1 })
                 .limit(500)
