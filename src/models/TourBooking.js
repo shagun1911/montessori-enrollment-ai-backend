@@ -15,6 +15,10 @@ const tourBookingSchema = new mongoose.Schema({
     callLogId: { type: mongoose.Schema.Types.ObjectId, ref: 'CallLog', default: null },
     reminderSent: { type: Boolean, default: false },
     followupSent: { type: Boolean, default: false },
+    // AI Insights (Cached)
+    aiProcessed: { type: Boolean, default: false },
+    questionsAsked: [{ type: String, default: '' }],
+    highlights: { type: String, default: '' },
 }, { timestamps: true });
 
 tourBookingSchema.index({ schoolId: 1, scheduledAt: -1 });

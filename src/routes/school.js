@@ -233,7 +233,7 @@ router.get('/dashboard', async (req, res) => {
                         voiceAiCallsInner = rawLogs.map(log => ({
                             id: log._id.toString(),
                             callerPhone: log.participant_id ? log.participant_id.replace('sip_', '') : 'Unknown',
-                            callerName: 'Parent',
+                            callerName: resolveName(log.participant_id ? log.participant_id.replace('sip_', '') : ''),
                             duration: log.duration_seconds || 0,
                             timestamp: log.created_at || log.timestamp || new Date(),
                             recordingUrl: log.recording_url || null,
@@ -272,11 +272,25 @@ router.get('/dashboard', async (req, res) => {
                 .sort({ createdAt: -1 })
                 .limit(500)
                 .lean(),
-            TourBooking.countDocuments({
-                schoolId,
-                scheduledAt: { $gte: periodStart }
-            }),
+            TourBooking.find({ schoolId })
+                .select('phone parentName childName')
+                .lean(),
         ]);
+
+        // Create a lookup map for parent names based on normalized phone numbers
+        const parentNameMap = new Map();
+        actualToursBooked.forEach(tour => {
+            const normalized = normalizePhone(tour.phone);
+            if (normalized && tour.parentName && tour.parentName !== 'Parent') {
+                parentNameMap.set(normalized, tour.parentName);
+            }
+        });
+
+        // Helper to get name for a phone
+        const resolveName = (phone, fallback = 'Parent') => {
+            const normalized = normalizePhone(phone);
+            return parentNameMap.get(normalized) || fallback;
+        };
 
         adminEmailNotifications = adminEmails.map(email => ({
             id: email._id.toString(),
@@ -300,7 +314,7 @@ router.get('/dashboard', async (req, res) => {
                     || wh.tour_booking_extracted?.phone
                     || wh.user_id
                     || 'Web Widget',
-                callerName: wh.tour_booking_extracted?.name || 'Parent',
+                callerName: resolveName(wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || '', wh.tour_booking_extracted?.name || 'Parent'),
                 duration: getCallDurationSeconds(wh),
                 timestamp: callTimestamp,
                 recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
@@ -316,7 +330,7 @@ router.get('/dashboard', async (req, res) => {
             id: cl._id.toString(),
             conversationId: cl.conversation_id,
             callerPhone: cl.from_phone_number || 'Unknown',
-            callerName: 'Parent',
+            callerName: resolveName(cl.from_phone_number || '', cl.callerName || 'Parent'),
             duration: cl.duration || 0,
             timestamp: cl.createdAt,
             recordingUrl: cl.conversation_id ? `${backendUrl}/api/school/calls/${cl.conversation_id}/audio?token=${userToken}` : null,
@@ -438,10 +452,10 @@ router.get('/dashboard', async (req, res) => {
         res.json({
             metrics: [
                 { label: 'Total Calls', value: totalCalls, icon: 'PhoneCall' },
-                { label: 'Tours Booked', value: actualToursBooked, icon: 'Calendar' },
-                { label: 'Minutes Consumed', value: allTimeMinutes, ticker: true, icon: 'Activity' },
-                { label: 'Average Call Length', value: avgCallLengthFormatted, icon: 'Clock' },
                 { label: 'Action Needed', value: actionNeeded, icon: 'AlertTriangle' },
+                { label: 'Tours Booked', value: actualToursBooked.filter(t => t.scheduledAt >= periodStart).length, icon: 'Calendar' },
+                { label: 'Minutes Consumed', value: `${allTimeMinutes} / 600`, ticker: true, icon: 'Activity' },
+                { label: 'Average Call Length', value: avgCallLengthFormatted, icon: 'Clock' },
             ],
             chartData,
             recentCalls,
@@ -518,6 +532,10 @@ router.get('/daily-insights', async (req, res) => {
         const todayEnd = new Date();
         todayEnd.setHours(23, 59, 59, 999);
 
+        // Build "Common Parent Questions" from a broader window so it’s actually useful.
+        // 30 days tends to be stable enough to surface repeated topics like Fees/Cameras/After-school.
+        const wordCloudStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
         // ── 1. Needs Attention: calls from today with no tour booked ──
         const todayWebhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
@@ -529,10 +547,28 @@ router.get('/daily-insights', async (req, res) => {
             ]
         }).sort({ received_at: -1 }).lean();
 
-        // Extract all transcripts for word cloud
-        const allTranscripts = todayWebhooks.map(wh => 
-            Array.isArray(wh.transcript) ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n') : ''
-        ).filter(Boolean);
+        // Extract transcripts for word cloud (last 30 days)
+        const wordCloudWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            received_at: { $gte: wordCloudStart, $lte: todayEnd },
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        })
+            .select('transcript')
+            .sort({ received_at: -1 })
+            .limit(500)
+            .lean();
+
+        const allTranscripts = wordCloudWebhooks
+            .map(wh =>
+                Array.isArray(wh.transcript)
+                    ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                    : ''
+            )
+            .filter(Boolean);
 
         const wordCloud = await generateWordCloud(allTranscripts);
 
@@ -562,8 +598,21 @@ router.get('/daily-insights', async (req, res) => {
             scheduledAt: { $gte: todayStart, $lte: todayEnd }
         }).sort({ scheduledAt: 1 }).lean();
 
-        // Try to enrich each tour with the linked webhook (transcript/summary)
-        const todaysTours = await Promise.all(todaysTourDocs.map(async (tour) => {
+        // Separate tours that need processing from those already cached
+        const toursToProcess = [];
+        const enrichedToursMap = new Map();
+
+        await Promise.all(todaysTourDocs.map(async (tour) => {
+            if (tour.aiProcessed) {
+                enrichedToursMap.set(tour._id.toString(), {
+                    ...tour,
+                    id: tour._id.toString(),
+                    highlights: tour.highlights || '',
+                    callSummary: '' // Will be enriched if webhook found
+                });
+                return;
+            }
+
             const tourPhone = normalizePhone(tour.phone);
             const linkedWebhook = await ElevenLabsWebhook.findOne({
                 type: 'post_call_transcription',
@@ -576,56 +625,92 @@ router.get('/daily-insights', async (req, res) => {
                 ]
             }).sort({ received_at: -1 }).lean();
 
-            let aiDetails = {
-                childName: tour.childName || '',
-                childAge: tour.childAge || '',
-                purpose: tour.reason || 'Enrollment Inquiry',
-                questionsAsked: [],
-                notes: ''
-            };
-
             if (linkedWebhook) {
                 const transcriptText = Array.isArray(linkedWebhook.transcript) 
                     ? linkedWebhook.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
                     : '';
                 
                 if (transcriptText) {
-                    const extracted = await extractTourDetails(transcriptText, {
-                        childName: tour.childName,
-                        childAge: tour.childAge,
-                        purpose: tour.reason
+                    toursToProcess.push({
+                        id: tour._id.toString(),
+                        transcript: transcriptText,
+                        existingDetails: {
+                            childName: tour.childName,
+                            childAge: tour.childAge,
+                            purpose: tour.reason
+                        },
+                        tourDoc: tour,
+                        linkedWebhook
                     });
-                    
-                    const safeStr = (v) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v || ''));
-                    
-                    aiDetails = {
-                        childName: safeStr(extracted.childName || extracted["Child Name"] || aiDetails.childName),
-                        childAge: safeStr(extracted.childAge || extracted["Child Age/Grade"] || aiDetails.childAge),
-                        purpose: safeStr(extracted.purpose || extracted["Purpose of Visit"] || aiDetails.purpose),
-                        questionsAsked: Array.isArray(extracted.questionsAsked || extracted["Key Questions Asked"])
-                            ? (extracted.questionsAsked || extracted["Key Questions Asked"]).map(q => safeStr(q))
-                            : [],
-                        notes: safeStr(extracted.notes || extracted["Additional Notes"] || linkedWebhook.summary || '')
-                    };
+                } else {
+                    // No transcript but webhook exists
+                    enrichedToursMap.set(tour._id.toString(), { ...tour, id: tour._id.toString(), linkedWebhook });
                 }
+            } else {
+                // No webhook found
+                enrichedToursMap.set(tour._id.toString(), { ...tour, id: tour._id.toString() });
             }
-
-            return {
-                id: tour._id.toString(),
-                parentName: tour.parentName || linkedWebhook?.tour_booking_extracted?.name || 'Parent',
-                phone: tour.phone || linkedWebhook?.metadata?.phone_call?.from_number || '',
-                email: tour.email || linkedWebhook?.tour_booking_extracted?.email || '',
-                childName: aiDetails.childName,
-                childAge: aiDetails.childAge,
-                reason: aiDetails.purpose,
-                scheduledAt: tour.scheduledAt,
-                calendarProvider: tour.calendarProvider || null,
-                questionsAsked: aiDetails.questionsAsked,
-                highlights: aiDetails.notes,
-                callSummary: linkedWebhook?.summary || '',
-                reminderSent: tour.reminderSent || false,
-            };
         }));
+
+        // Batch process the ones that need it
+        if (toursToProcess.length > 0) {
+            console.log(`[DAILY-INSIGHTS] Batch processing ${toursToProcess.length} tours...`);
+            const { batchExtractTourDetails } = require('../utils/openai');
+            const batchResults = await batchExtractTourDetails(toursToProcess);
+
+            for (const item of toursToProcess) {
+                const extracted = batchResults[item.id] || {};
+                const safeStr = (v) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v || ''));
+                
+                const aiDetails = {
+                    childName: safeStr(extracted.childName || item.tourDoc.childName || ''),
+                    childAge: safeStr(extracted.childAge || item.tourDoc.childAge || ''),
+                    purpose: safeStr(extracted.purpose || item.tourDoc.reason || 'Enrollment Inquiry'),
+                    questionsAsked: Array.isArray(extracted.questionsAsked) ? extracted.questionsAsked.map(q => safeStr(q)) : [],
+                    notes: safeStr(extracted.notes || item.linkedWebhook.summary || '')
+                };
+
+                // Cache to DB (no await needed for each, can do bulk or background)
+                TourBooking.findByIdAndUpdate(item.id, {
+                    childName: aiDetails.childName,
+                    childAge: aiDetails.childAge,
+                    reason: aiDetails.purpose,
+                    questionsAsked: aiDetails.questionsAsked,
+                    highlights: aiDetails.notes,
+                    aiProcessed: true
+                }).catch(err => console.error(`[DAILY-INSIGHTS] Failed to cache tour ${item.id}:`, err));
+
+                enrichedToursMap.set(item.id, {
+                    ...item.tourDoc,
+                    id: item.id,
+                    childName: aiDetails.childName,
+                    childAge: aiDetails.childAge,
+                    reason: aiDetails.purpose,
+                    questionsAsked: aiDetails.questionsAsked,
+                    highlights: aiDetails.notes,
+                    callSummary: item.linkedWebhook.summary || ''
+                });
+            }
+        }
+
+        const todaysTours = todaysTourDocs.map(tour => {
+            const enriched = enrichedToursMap.get(tour._id.toString()) || { ...tour, id: tour._id.toString() };
+            return {
+                id: enriched.id,
+                parentName: enriched.parentName || 'Parent',
+                phone: enriched.phone || '',
+                email: enriched.email || '',
+                childName: enriched.childName || '',
+                childAge: enriched.childAge || '',
+                reason: enriched.reason || enriched.purpose || 'Enrollment Inquiry',
+                scheduledAt: enriched.scheduledAt,
+                calendarProvider: enriched.calendarProvider || null,
+                questionsAsked: enriched.questionsAsked || [],
+                highlights: enriched.highlights || enriched.notes || '',
+                callSummary: enriched.callSummary || '',
+                reminderSent: enriched.reminderSent || false,
+            };
+        });
 
         const todayCalls = todayWebhooks.map(wh => ({
             id: wh._id.toString(),

@@ -1,8 +1,9 @@
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
     let token = null;
     const authHeader = req.headers.authorization;
 
@@ -18,7 +19,21 @@ function authMiddleware(req, res, next) {
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
+
+        // IMPORTANT: Don't trust schoolId/role from old tokens.
+        // Always hydrate from DB to prevent stale/incorrect tenant scoping.
+        const user = await User.findById(decoded.id).select('email name role schoolId').lean();
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid or expired token' });
+        }
+
+        req.user = {
+            id: user._id.toString(),
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            schoolId: user.schoolId ? user.schoolId.toString() : null,
+        };
         next();
     } catch (err) {
         return res.status(401).json({ error: 'Invalid or expired token' });
