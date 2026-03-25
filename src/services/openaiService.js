@@ -118,10 +118,16 @@ Determine if a school tour was booked during this call. If yes, extract the date
 Respond ONLY with a JSON object in this exact format:
 {
   "tour_booked": true or false,
+  "parent_name": "name of the parent or null",
+  "parent_phone": "phone number or null",
+  "parent_email": "email address or null",
+  "child_name": "name of the child or null",
+  "child_age": "age or grade of the child or null",
+  "reason": "reason for inquiry (e.g. looking for preschool)",
   "date": "YYYY-MM-DD" or null,
   "time": "HH:MM" or null,
   "datetime": "ISO 8601 datetime string" or null,
-  "notes": "any additional context about the booking"
+  "notes": "any additional context about the booking or inquiry"
 }
 
 If no tour was booked, set "tour_booked" to false and all other fields to null.
@@ -168,6 +174,12 @@ JSON Response:`;
 
         return {
             tour_booked: bookingInfo.tour_booked === true,
+            name: bookingInfo.parent_name || null,
+            phone: bookingInfo.parent_phone || null,
+            email: bookingInfo.parent_email || null,
+            childName: bookingInfo.child_name || null,
+            childAge: bookingInfo.child_age || null,
+            reason: bookingInfo.reason || null,
             date: bookingInfo.date || null,
             time: bookingInfo.time || null,
             datetime: datetimeValid ? datetimeRaw : null,

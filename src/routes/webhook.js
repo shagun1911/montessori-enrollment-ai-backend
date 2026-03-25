@@ -242,85 +242,6 @@ function normalizePhone(phone) {
     return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
 }
 
-/**
- * Extract parent information from transcript using OpenAI
- */
-async function extractParentInfo(transcriptArray) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        console.warn('[Webhook] OPENAI_API_KEY not configured, skipping parent info extraction');
-        return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
-    }
-
-    try {
-        const { formatTranscript } = require('../services/openaiService');
-        const transcriptText = formatTranscript(transcriptArray);
-        if (!transcriptText || transcriptText.trim().length === 0) {
-            return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
-        }
-
-        const axios = require('axios');
-        const prompt = `You are analyzing a phone call transcript between a school enrollment AI agent and a parent.
-
-Extract the following information about the parent/caller:
-- Parent's name
-- Phone number (if mentioned)
-- Email address (if mentioned)
-- Child's name (if mentioned)
-- Child's age (if mentioned)
-- Reason for inquiry (if mentioned)
-
-Respond ONLY with a JSON object in this exact format:
-{
-  "parent_name": "name or empty string",
-  "phone": "phone number or empty string",
-  "email": "email address or empty string",
-  "child_name": "child name or empty string",
-  "child_age": "child age or empty string",
-  "reason": "reason for inquiry or empty string"
-}
-
-Transcript:
-${transcriptText}
-
-JSON Response:`;
-
-        const response = await axios.post(
-            'https://api.openai.com/v1/chat/completions',
-            {
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: 200,
-                temperature: 0.3,
-                response_format: { type: 'json_object' }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        const content = response.data?.choices?.[0]?.message?.content?.trim();
-        if (!content) {
-            return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
-        }
-
-        const info = JSON.parse(content);
-        return {
-            parentName: info.parent_name || '',
-            phone: info.phone || '',
-            email: info.email || '',
-            childName: info.child_name || '',
-            childAge: info.child_age || '',
-            reason: info.reason || ''
-        };
-    } catch (err) {
-        console.error('[Webhook] Error extracting parent info:', err.message);
-        return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
-    }
-}
 
 /**
  * Find school by called phone number (aiNumber) or by elevenlabsAgentId stored on the school.
@@ -450,15 +371,15 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             return;
         }
 
-        // Extract parent info from transcript
-        const parentInfo = await extractParentInfo(webhook.transcript || []);
-        console.log('[Webhook Booking] Extracted parent info:', parentInfo);
+        // Use AI results already extracted
+        const extracted = aiResult.tour_booking_extracted || {};
+        console.log('[Webhook Booking] Using extracted info:', extracted);
 
         // Parent's phone is 'from_number' for inbound calls
         const phoneCall = webhook.metadata?.phone_call || {};
         const callerPhone = phoneCall.from_number || '';
-        const phone = parentInfo.phone || callerPhone || '';
-        const parentName = parentInfo.parentName || 'Parent';
+        const phone = extracted.phone || callerPhone || '';
+        const parentName = extracted.name || 'Parent';
 
         // Get tour booking date — interpret as school local time if no timezone in string (fixes parent seeing wrong time)
         const tourDate = aiResult.tour_booking_date;
@@ -489,10 +410,10 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
                 schoolId,
                 parentName,
                 phone: phone || '',
-                email: parentInfo.email || '',
-                childName: parentInfo.childName || '',
-                childAge: parentInfo.childAge || '',
-                reason: parentInfo.reason || '',
+                email: extracted.email || '',
+                childName: extracted.childName || '',
+                childAge: extracted.childAge || '',
+                reason: extracted.notes || '',
                 scheduledAt: start,
                 calendarEventId: '',
                 calendarProvider: '',
@@ -504,7 +425,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         // Get school name and preferred calendar for event title
         const school = await School.findById(schoolId).select('name preferredCalendar').lean();
         const title = `School Tour – ${parentName}`;
-        const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
+        const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${extracted.email || 'N/A'}. Reason: ${extracted.notes || 'Inquiry'}.${extracted.notes ? ` Notes: ${extracted.notes}` : ''}`;
 
         console.log(`[Webhook Booking] School: ${school?.name || 'Unknown'}`);
         console.log(`[Webhook Booking] Preferred Calendar: ${school?.preferredCalendar || 'google'}`);
@@ -523,7 +444,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             integrations.map(i => `${i.type} (connected: ${i.connected})`).join(', ') || 'None');
 
         // Create calendar event (include parent email so they receive a calendar invite)
-        const parentEmail = parentInfo.email || '';
+        const parentEmail = extracted.email || '';
         console.log(`[Webhook Booking] Attempting to create calendar event with preference: ${school?.preferredCalendar || 'google'}...`);
         if (parentEmail) {
             console.log(`[Webhook Booking] Adding parent as attendee for calendar invite: ${parentEmail}`);
@@ -544,10 +465,10 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             schoolId,
             parentName,
             phone: phone || '',
-            email: parentInfo.email || '',
-            childName: parentInfo.childName || '',
-            childAge: parentInfo.childAge || '',
-            reason: parentInfo.reason || '',
+            email: extracted.email || '',
+            childName: extracted.childName || '',
+            childAge: extracted.childAge || '',
+            reason: extracted.reason || extracted.notes || '',
             scheduledAt: start,
             calendarEventId: calResult.success ? calResult.eventId : '',
             calendarProvider: calResult.success ? calResult.provider : '',
