@@ -5,6 +5,7 @@ const tourBookingSchema = new mongoose.Schema({
     parentName: { type: String, default: '' },
     phone: { type: String, default: '' },
     email: { type: String, default: '' },
+    childName: { type: String, default: '' },
     childAge: { type: String, default: '' },
     reason: { type: String, default: '' },
     scheduledAt: { type: Date, required: true },

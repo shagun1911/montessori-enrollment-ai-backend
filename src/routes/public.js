@@ -159,7 +159,7 @@ router.post('/book-tour/:schoolId', async (req, res) => {
         const school = await School.findById(schoolId).select('name').lean();
         if (!school) return res.status(404).json({ error: 'School not found' });
 
-        const { parentName, email, phone, childAge, reason, scheduledAt } = req.body || {};
+        const { parentName, email, phone, childAge, childName, reason, scheduledAt } = req.body || {};
         if (!parentName?.trim() || !scheduledAt) {
             return res.status(400).json({ error: 'Parent name and scheduledAt are required' });
         }
@@ -195,6 +195,7 @@ router.post('/book-tour/:schoolId', async (req, res) => {
             parentName: parentName.trim(),
             phone: phone || '',
             email: email || '',
+            childName: childName || '',
             childAge: childAge || '',
             reason: reason || '',
             scheduledAt: start,

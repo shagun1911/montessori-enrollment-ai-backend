@@ -347,7 +347,20 @@ router.get('/dashboard', async (req, res) => {
         // Calculate metrics from period calls
         const totalCalls = periodCalls.length;
         const totalDurationSeconds = periodCalls.reduce((acc, c) => acc + (c.duration || 0), 0);
-        const callMinutes = Math.floor(totalDurationSeconds / 60);
+
+        // ALL-TIME Minutes (usage tracker - never "resets" due to limited query windows)
+        // IMPORTANT: We must compute this from the same merged/deduped `calls` array used for
+        // the other dashboard metrics; summing only `CallLog` can undercount when some calls
+        // only exist in VoiceAI (benny) and/or ElevenLabs webhooks.
+        const allTimeDurationSeconds = calls.reduce((acc, c) => acc + (Number(c.duration) || 0), 0);
+        const allTimeMinutes = Math.floor(allTimeDurationSeconds / 60);
+
+        // Average Call Length (Period-based)
+        const avgCallLengthSeconds = totalCalls > 0 ? Math.round(totalDurationSeconds / totalCalls) : 0;
+        const avgCallLengthFormatted = `${Math.floor(avgCallLengthSeconds / 60)}m ${avgCallLengthSeconds % 60}s`;
+
+        // Action Needed (Missed Tours / Needs Attention) - Period-based
+        const actionNeeded = periodCalls.filter(c => !c.tourBookingDetected).length;
 
         // Tours booked within the period
         const actualToursBooked = await TourBooking.countDocuments({
@@ -413,9 +426,11 @@ router.get('/dashboard', async (req, res) => {
 
         res.json({
             metrics: [
-                { label: 'Total Calls', value: totalCalls },
-                { label: 'Tours Booked', value: actualToursBooked },
-                { label: 'Minutes Consumed', value: callMinutes, maxValue: 600 },
+                { label: 'Total Calls', value: totalCalls, icon: 'PhoneCall' },
+                { label: 'Tours Booked', value: actualToursBooked, icon: 'Calendar' },
+                { label: 'Minutes Consumed', value: allTimeMinutes, ticker: true, icon: 'Activity' },
+                { label: 'Average Call Length', value: avgCallLengthFormatted, icon: 'Clock' },
+                { label: 'Action Needed', value: actionNeeded, icon: 'AlertTriangle' },
             ],
             chartData,
             recentCalls,
@@ -440,6 +455,7 @@ router.get('/tour-bookings', async (req, res) => {
             parentName: b.parentName || '',
             phone: b.phone || '',
             email: b.email || '',
+            childName: b.childName || '',
             childAge: b.childAge || '',
             reason: b.reason || '',
             scheduledAt: b.scheduledAt,
@@ -504,20 +520,39 @@ router.get('/daily-insights', async (req, res) => {
 
         const needsAttention = todayWebhooks
             .filter(wh => !wh.tour_booking_detected)
-            .map(wh => ({
-                id: wh._id.toString(),
-                conversationId: wh.conversation_id,
-                callerName: wh.tour_booking_extracted?.name || 'Parent',
-                callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
-                summary: wh.summary || '',
-                timestamp: wh.metadata?.start_time_unix_secs
-                    ? new Date(wh.metadata.start_time_unix_secs * 1000)
-                    : wh.received_at,
-                recordingUrl: wh.conversation_id
-                    ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
-                    : null,
-                duration: getCallDurationSeconds(wh),
-            }));
+            .map(wh => {
+                // Extract questions from unbooked calls for word cloud enrichment
+                let questionsAsked = [];
+                if (Array.isArray(wh.transcript)) {
+                    const userMsgs = wh.transcript.filter(t => t.role === 'user');
+                    questionsAsked = userMsgs
+                        .map(t => (t.message || t.text || '').trim())
+                        .filter(msg => {
+                            const low = msg.toLowerCase();
+                            return msg.endsWith('?') ||
+                                low.startsWith('what') || low.startsWith('how') ||
+                                low.startsWith('can') || low.startsWith('do ') ||
+                                low.startsWith('does ') || low.startsWith('is ') ||
+                                low.startsWith('are ') || low.startsWith('tell me');
+                        })
+                        .slice(0, 10);
+                }
+                return {
+                    id: wh._id.toString(),
+                    conversationId: wh.conversation_id,
+                    callerName: wh.tour_booking_extracted?.name || 'Parent',
+                    callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
+                    summary: wh.summary || '',
+                    timestamp: wh.metadata?.start_time_unix_secs
+                        ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                        : wh.received_at,
+                    recordingUrl: wh.conversation_id
+                        ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
+                        : null,
+                    duration: getCallDurationSeconds(wh),
+                    questionsAsked,
+                };
+            });
 
         // ── 2. Today's Tours: full detail with questions from transcript ──
         const todaysTourDocs = await TourBooking.find({
@@ -548,7 +583,7 @@ router.get('/daily-insights', async (req, res) => {
                 callSummary = linkedWebhook.summary || '';
                 // Highlights from summary or extracted notes
                 highlights = linkedWebhook.tour_booking_extracted?.notes || callSummary;
-                
+
                 // Aggressive Questions extraction (look for user questions in transcript)
                 if (Array.isArray(linkedWebhook.transcript)) {
                     const userMsgs = linkedWebhook.transcript.filter(t => t.role === 'user');
@@ -556,11 +591,11 @@ router.get('/daily-insights', async (req, res) => {
                         .map(t => (t.message || t.text || '').trim())
                         .filter(msg => {
                             const low = msg.toLowerCase();
-                            return msg.endsWith('?') || 
-                                   low.startsWith('what') || low.startsWith('how') || 
-                                   low.startsWith('can') || low.startsWith('do ') || 
-                                   low.startsWith('does ') || low.startsWith('is ') || 
-                                   low.startsWith('are ') || low.startsWith('tell me');
+                            return msg.endsWith('?') ||
+                                low.startsWith('what') || low.startsWith('how') ||
+                                low.startsWith('can') || low.startsWith('do ') ||
+                                low.startsWith('does ') || low.startsWith('is ') ||
+                                low.startsWith('are ') || low.startsWith('tell me');
                         })
                         .slice(0, 10); // Capture more questions
                 }
@@ -568,7 +603,7 @@ router.get('/daily-insights', async (req, res) => {
                 // Expand a generic "book a tour" reason using keywords from summary/transcript
                 const fullText = (callSummary + ' ' + (linkedWebhook.transcript || []).map(t => t.message || '').join(' ')).toLowerCase();
                 let expandedReason = tour.reason || 'Enrollment Inquiry';
-                
+
                 const keywords = [
                     { key: 'infant', label: 'Infant Room' },
                     { key: 'toddler', label: 'Toddler Program' },
@@ -599,6 +634,7 @@ router.get('/daily-insights', async (req, res) => {
                 parentName: tour.parentName || linkedWebhook?.tour_booking_extracted?.name || 'Parent',
                 phone: tour.phone || linkedWebhook?.metadata?.phone_call?.from_number || '',
                 email: tour.email || linkedWebhook?.tour_booking_extracted?.email || '',
+                childName: tour.childName || linkedWebhook?.tour_booking_extracted?.childName || '',
                 childAge: tour.childAge || '',
                 reason: tour.reason,
                 scheduledAt: tour.scheduledAt,
@@ -1224,12 +1260,58 @@ router.get('/followups', async (req, res) => {
             status: f.status,
             message: f.message,
             recipient: f.recipient,
+            addressed: !!f.addressed,
+            addressedNote: f.addressedNote || '',
+            addressedAt: f.addressedAt || null,
             timestamp: f.createdAt,
         }));
 
         res.json(formatted);
     } catch (err) {
         console.error('School followups error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/school/followups/:id/addressed - mark a follow-up as addressed with a note
+router.post('/followups/:id/addressed', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const { id } = req.params;
+        const { note } = req.body || {};
+
+        if (!id) return res.status(400).json({ error: 'Missing follow-up id' });
+
+        const addressedNote = typeof note === 'string' ? note.trim() : '';
+
+        const updated = await Followup.findOneAndUpdate(
+            { _id: id, schoolId },
+            {
+                $set: {
+                    addressed: true,
+                    addressedNote,
+                    addressedAt: new Date(),
+                    addressedBy: req.user?.email ? String(req.user.email) : '',
+                }
+            },
+            { new: true }
+        ).lean();
+
+        if (!updated) {
+            return res.status(404).json({ error: 'Follow-up not found' });
+        }
+
+        res.json({
+            success: true,
+            followup: {
+                id: updated._id.toString(),
+                addressed: !!updated.addressed,
+                addressedNote: updated.addressedNote || '',
+                addressedAt: updated.addressedAt || null,
+            }
+        });
+    } catch (err) {
+        console.error('Mark follow-up addressed error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

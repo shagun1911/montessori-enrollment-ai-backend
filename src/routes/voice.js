@@ -199,6 +199,7 @@ router.post('/call-end', async (req, res) => {
         const phone = leadData?.phone || callerPhone;
         const email = leadData?.email;
         const childAge = leadData?.childAge;
+        const childName = leadData?.childName;
         const reason = leadData?.reason;
         const tourScheduledAt = leadData?.tourScheduledAt; // ISO date string if parent booked a tour
 
@@ -240,6 +241,7 @@ router.post('/call-end', async (req, res) => {
                             parentName,
                             phone: phone || '',
                             email: email || '',
+                            childName: childName || '',
                             childAge: childAge || '',
                             reason: reason || '',
                             scheduledAt: start,

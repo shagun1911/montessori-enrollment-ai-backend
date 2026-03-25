@@ -7,6 +7,11 @@ const followupSchema = new mongoose.Schema({
     status: { type: String, enum: ['sent', 'pending', 'failed'], default: 'pending' },
     message: { type: String, default: '' },
     recipient: { type: String, default: '' },
+    // Addressed = manager/front desk closed the loop for this follow-up.
+    addressed: { type: Boolean, default: false },
+    addressedNote: { type: String, default: '' },
+    addressedAt: { type: Date, default: null },
+    addressedBy: { type: String, default: '' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Followup', followupSchema);

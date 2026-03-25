@@ -28,7 +28,7 @@ router.post('/elevenlabs', async (req, res) => {
     console.log('[Webhook] Received POST type=', payload?.type || 'unknown', 'conversation_id=', payload?.data?.conversation_id || 'n/a');
 
     // Immediately acknowledge receipt with 200 OK
-    res.status(200).json({ 
+    res.status(200).json({
         status: 'received',
         message: 'Webhook received successfully'
     });
@@ -101,23 +101,23 @@ async function processWebhookAsync(payload) {
             console.log('[Webhook] Processing post_call_transcription webhook');
             console.log('[Webhook] Conversation ID:', conversationId);
             console.log('[Webhook] Transcript entries:', Array.isArray(data.transcript) ? data.transcript.length : 0);
-            
+
             webhookDoc.transcript = data.transcript || [];
-            
+
             // Log transcript summary
             if (Array.isArray(data.transcript) && data.transcript.length > 0) {
-                console.log('[Webhook] Transcript preview (first entry):', 
+                console.log('[Webhook] Transcript preview (first entry):',
                     JSON.stringify(data.transcript[0], null, 2));
             }
 
         } else if (type === 'post_call_audio') {
             console.log('[Webhook] Processing post_call_audio webhook');
             console.log('[Webhook] Conversation ID:', conversationId);
-            console.log('[Webhook] Audio data length:', 
+            console.log('[Webhook] Audio data length:',
                 data.full_audio ? `${data.full_audio.length} characters (base64)` : 'missing');
-            
+
             webhookDoc.audio_base64 = data.full_audio || '';
-            
+
             // Log audio metadata
             if (metadata.phone_call) {
                 console.log('[Webhook] Call duration:', metadata.phone_call.call_duration_secs, 'seconds');
@@ -150,7 +150,7 @@ async function processWebhookAsync(payload) {
     } catch (err) {
         console.error('[Webhook] Error processing webhook:', err);
         console.error('[Webhook] Error stack:', err.stack);
-        
+
         // Try to save error information
         try {
             await ElevenLabsWebhook.create({
@@ -177,10 +177,10 @@ async function processWebhookAsync(payload) {
 async function processTranscriptWithAI(webhookId, transcriptArray) {
     try {
         console.log(`[Webhook AI] Processing transcript for webhook ID: ${webhookId}`);
-        
+
         // Process transcript with OpenAI
         const aiResult = await processTranscript(transcriptArray);
-        
+
         // Update webhook with AI results
         const updatedWebhook = await ElevenLabsWebhook.findByIdAndUpdate(
             webhookId,
@@ -197,10 +197,10 @@ async function processTranscriptWithAI(webhookId, transcriptArray) {
         console.log(`[Webhook AI] AI processing complete for webhook ID: ${webhookId}`);
         console.log(`[Webhook AI] Summary generated: ${aiResult.summary ? 'Yes' : 'No'}`);
         console.log(`[Webhook AI] Tour booking detected: ${aiResult.tour_booking_detected}`);
-        
+
         if (aiResult.tour_booking_detected && aiResult.tour_booking_date) {
             console.log(`[Webhook AI] Tour booking date: ${aiResult.tour_booking_date}`);
-            
+
             // Automatically create calendar booking
             await createTourBookingFromWebhook(updatedWebhook, aiResult).catch(err => {
                 console.error('[Webhook AI] Error creating tour booking:', err);
@@ -249,14 +249,14 @@ async function extractParentInfo(transcriptArray) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
         console.warn('[Webhook] OPENAI_API_KEY not configured, skipping parent info extraction');
-        return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+        return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
     }
 
     try {
         const { formatTranscript } = require('../services/openaiService');
         const transcriptText = formatTranscript(transcriptArray);
         if (!transcriptText || transcriptText.trim().length === 0) {
-            return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+            return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
         }
 
         const axios = require('axios');
@@ -266,6 +266,7 @@ Extract the following information about the parent/caller:
 - Parent's name
 - Phone number (if mentioned)
 - Email address (if mentioned)
+- Child's name (if mentioned)
 - Child's age (if mentioned)
 - Reason for inquiry (if mentioned)
 
@@ -274,6 +275,7 @@ Respond ONLY with a JSON object in this exact format:
   "parent_name": "name or empty string",
   "phone": "phone number or empty string",
   "email": "email address or empty string",
+  "child_name": "child name or empty string",
   "child_age": "child age or empty string",
   "reason": "reason for inquiry or empty string"
 }
@@ -302,7 +304,7 @@ JSON Response:`;
 
         const content = response.data?.choices?.[0]?.message?.content?.trim();
         if (!content) {
-            return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+            return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
         }
 
         const info = JSON.parse(content);
@@ -310,12 +312,13 @@ JSON Response:`;
             parentName: info.parent_name || '',
             phone: info.phone || '',
             email: info.email || '',
+            childName: info.child_name || '',
             childAge: info.child_age || '',
             reason: info.reason || ''
         };
     } catch (err) {
         console.error('[Webhook] Error extracting parent info:', err.message);
-        return { parentName: '', phone: '', email: '', childAge: '', reason: '' };
+        return { parentName: '', phone: '', email: '', childName: '', childAge: '', reason: '' };
     }
 }
 
@@ -333,7 +336,7 @@ async function findSchoolForWebhook(webhook) {
         // INBOUND: agent_number is our AI number, external_number is the parent
         // OUTBOUND: external_number is the destination
         const calledNumber = phoneCall.agent_number || phoneCall.to_number || '';
-        
+
         if (calledNumber) {
             const normalizedCalled = normalizePhone(calledNumber);
             if (normalizedCalled) {
@@ -350,7 +353,7 @@ async function findSchoolForWebhook(webhook) {
                     return matchedSchools[0]._id;
                 } else if (matchedSchools.length > 1) {
                     console.log(`[Webhook] Multiple schools match aiNumber ${normalizedCalled}. Attempting to disambiguate...`);
-                    
+
                     // Disambiguate by agentId
                     const agentId = webhook.agent_id || '';
                     if (agentId) {
@@ -394,7 +397,7 @@ async function findSchoolForWebhook(webhook) {
                 return matchedSchools[0]._id;
             } else if (matchedSchools.length > 1) {
                 console.log(`[Webhook] Multiple schools match elevenlabsAgentId ${agentId}. Attempting to disambiguate...`);
-                
+
                 // Disambiguate by school_id in metadata (useful if passing via React SDK)
                 const webhookSchoolId = webhook.metadata?.school_id || webhook.metadata?.schoolId;
                 if (webhookSchoolId) {
@@ -439,7 +442,7 @@ async function findSchoolForWebhook(webhook) {
 async function createTourBookingFromWebhook(webhook, aiResult) {
     try {
         console.log('[Webhook Booking] Starting automatic tour booking creation...');
-        
+
         // Find school
         const schoolId = await findSchoolForWebhook(webhook);
         if (!schoolId) {
@@ -487,6 +490,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
                 parentName,
                 phone: phone || '',
                 email: parentInfo.email || '',
+                childName: parentInfo.childName || '',
                 childAge: parentInfo.childAge || '',
                 reason: parentInfo.reason || '',
                 scheduledAt: start,
@@ -501,7 +505,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
         const school = await School.findById(schoolId).select('name preferredCalendar').lean();
         const title = `School Tour – ${parentName}`;
         const description = `Tour for ${parentName}. Phone: ${phone || 'N/A'}. Email: ${parentInfo.email || 'N/A'}. Reason: ${parentInfo.reason || 'Inquiry'}.${aiResult.tour_booking_extracted?.notes ? ` Notes: ${aiResult.tour_booking_extracted.notes}` : ''}`;
-        
+
         console.log(`[Webhook Booking] School: ${school?.name || 'Unknown'}`);
         console.log(`[Webhook Booking] Preferred Calendar: ${school?.preferredCalendar || 'google'}`);
         console.log(`[Webhook Booking] Tour Date/Time: ${start.toISOString()}`);
@@ -514,8 +518,8 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             connected: true,
             type: { $in: ['google', 'outlook'] }
         }).select('type connected').lean();
-        
-        console.log(`[Webhook Booking] Found ${integrations.length} connected integration(s):`, 
+
+        console.log(`[Webhook Booking] Found ${integrations.length} connected integration(s):`,
             integrations.map(i => `${i.type} (connected: ${i.connected})`).join(', ') || 'None');
 
         // Create calendar event (include parent email so they receive a calendar invite)
@@ -532,7 +536,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             description,
             parentEmail: parentEmail || undefined
         });
-        
+
         console.log(`[Webhook Booking] Calendar event creation result:`, JSON.stringify(calResult, null, 2));
 
         // Create the official TourBooking record exactly once here
@@ -541,6 +545,7 @@ async function createTourBookingFromWebhook(webhook, aiResult) {
             parentName,
             phone: phone || '',
             email: parentInfo.email || '',
+            childName: parentInfo.childName || '',
             childAge: parentInfo.childAge || '',
             reason: parentInfo.reason || '',
             scheduledAt: start,
@@ -713,26 +718,26 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         }
 
         console.log(`[Webhook Email] Looking up school with ID: ${schoolObjectId} (type: ${typeof schoolObjectId})`);
-        
+
         const school = await School.findById(schoolObjectId).select('name adminEmail').lean();
-        
+
         console.log(`[Webhook Email] School found: ${school ? school.name : 'Not found'}`);
-        
+
         if (!school) {
             console.warn('[Webhook Email] School not found in database');
             return;
         }
 
         // Find the user associated with this school (the school admin user)
-        const schoolUser = await User.findOne({ 
-            schoolId: schoolObjectId, 
-            role: 'school' 
+        const schoolUser = await User.findOne({
+            schoolId: schoolObjectId,
+            role: 'school'
         }).select('email name').lean();
-        
+
         console.log(`[Webhook Email] School user found: ${schoolUser ? schoolUser.name : 'Not found'}`);
         console.log(`[Webhook Email] School user email: "${schoolUser?.email || 'Not set'}"`);
         console.log(`[Webhook Email] School adminEmail: "${school?.adminEmail || 'Not set'}"`);
-        
+
         // Determine admin email: prefer school adminEmail (set in settings), fallback to school user login email
         let adminEmail = null;
         if (school.adminEmail && school.adminEmail.trim()) {
@@ -742,7 +747,7 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             adminEmail = schoolUser.email.trim();
             console.log(`[Webhook Email] Falling back to school user email: ${adminEmail}`);
         }
-        
+
         if (!adminEmail) {
             console.log('[Webhook Email] No admin email found (neither school user email nor school adminEmail), skipping notification');
             // Debug: show all school users
@@ -755,7 +760,7 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
             }
             return;
         }
-        
+
         // Format call information (duration from multiple possible payload locations)
         // Transcription webhook often has no duration; duration usually comes in post_call_audio for same conversation
         let callDuration = getCallDurationSeconds(webhook);
@@ -773,9 +778,9 @@ async function sendAdminEmailNotification(webhook, aiResult = null) {
         }
         const callDurationMin = Math.floor(callDuration / 60);
         const callDurationSec = callDuration % 60;
-        let callerNumber = webhook.metadata?.phone_call?.from_number 
-            || webhook.metadata?.phone_call?.external_number 
-            || aiResult?.tour_booking_extracted?.phone 
+        let callerNumber = webhook.metadata?.phone_call?.from_number
+            || webhook.metadata?.phone_call?.external_number
+            || aiResult?.tour_booking_extracted?.phone
             || 'Unknown (Web Widget)';
 
         const receivedAt = webhook.received_at ? new Date(webhook.received_at).toLocaleString() : new Date().toLocaleString();
@@ -813,9 +818,9 @@ ${summary}
         }
 
         if (tourBooked && tourDate) {
-            const tourDateStr = new Date(tourDate).toLocaleString(undefined, { 
-                dateStyle: 'full', 
-                timeStyle: 'short' 
+            const tourDateStr = new Date(tourDate).toLocaleString(undefined, {
+                dateStyle: 'full',
+                timeStyle: 'short'
             });
             emailBody += `Tour Booking:
 - Tour Scheduled: ${tourDateStr}
@@ -828,13 +833,18 @@ ${tourNotes ? `- Notes: ${tourNotes}\n` : ''}
 Best regards,
 Childcare Enrollment AI Platform`;
 
-        // Send email via Gmail API using Google Calendar integration
-        const emailResult = await sendEmailViaGmail(
-            schoolObjectId,
-            adminEmail,
-            emailSubject,
-            emailBody
-        );
+        // Send email using the school's preferred provider (Google/Outlook), with SMTP fallback.
+        // Note: this replaces the previous hardcoded Gmail-only flow.
+        let emailResult;
+        try {
+            emailResult = await sendEmail(schoolObjectId, {
+                to: adminEmail,
+                subject: emailSubject,
+                text: emailBody
+            });
+        } catch (err) {
+            emailResult = { success: false, error: err?.message || 'Failed to send email' };
+        }
 
         if (!emailResult.success) {
             console.error(`[Webhook Email] Failed to send email: ${emailResult.error}`);
@@ -860,7 +870,9 @@ Childcare Enrollment AI Platform`;
             recipient: adminEmail,
         });
 
-        console.log(`[Webhook Email] Admin notification sent successfully to ${adminEmail} via Gmail API`);
+        console.log(
+            `[Webhook Email] Admin notification sent successfully to ${adminEmail} via ${emailResult.method || 'provider'}`
+        );
 
     } catch (err) {
         console.error('[Webhook Email] Error sending admin email notification:', err.message);
