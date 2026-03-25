@@ -24,6 +24,10 @@ const {
     createSchoolAgent,
     APPOINTMENT_AGENT_PROMPT
 } = require('../utils/elevenlabs');
+const {
+    generateWordCloud,
+    extractTourDetails
+} = require('../utils/openai');
 
 
 // APPOINTMENT_AGENT_PROMPT is now imported from ../utils/elevenlabs
@@ -518,25 +522,16 @@ router.get('/daily-insights', async (req, res) => {
             ]
         }).sort({ received_at: -1 }).lean();
 
+        // Extract all transcripts for word cloud
+        const allTranscripts = todayWebhooks.map(wh => 
+            Array.isArray(wh.transcript) ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n') : ''
+        ).filter(Boolean);
+
+        const wordCloud = await generateWordCloud(allTranscripts);
+
         const needsAttention = todayWebhooks
             .filter(wh => !wh.tour_booking_detected)
             .map(wh => {
-                // Extract questions from unbooked calls for word cloud enrichment
-                let questionsAsked = [];
-                if (Array.isArray(wh.transcript)) {
-                    const userMsgs = wh.transcript.filter(t => t.role === 'user');
-                    questionsAsked = userMsgs
-                        .map(t => (t.message || t.text || '').trim())
-                        .filter(msg => {
-                            const low = msg.toLowerCase();
-                            return msg.endsWith('?') ||
-                                low.startsWith('what') || low.startsWith('how') ||
-                                low.startsWith('can') || low.startsWith('do ') ||
-                                low.startsWith('does ') || low.startsWith('is ') ||
-                                low.startsWith('are ') || low.startsWith('tell me');
-                        })
-                        .slice(0, 10);
-                }
                 return {
                     id: wh._id.toString(),
                     conversationId: wh.conversation_id,
@@ -550,7 +545,7 @@ router.get('/daily-insights', async (req, res) => {
                         ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
                         : null,
                     duration: getCallDurationSeconds(wh),
-                    questionsAsked,
+                    questionsAsked: [], // Will be enriched or replaced by word cloud data
                 };
             });
 
@@ -562,11 +557,6 @@ router.get('/daily-insights', async (req, res) => {
 
         // Try to enrich each tour with the linked webhook (transcript/summary)
         const todaysTours = await Promise.all(todaysTourDocs.map(async (tour) => {
-            let questionsAsked = [];
-            let highlights = '';
-            let callSummary = '';
-
-            // Find associated webhook by phone or callLogId
             const tourPhone = normalizePhone(tour.phone);
             const linkedWebhook = await ElevenLabsWebhook.findOne({
                 type: 'post_call_transcription',
@@ -579,53 +569,37 @@ router.get('/daily-insights', async (req, res) => {
                 ]
             }).sort({ received_at: -1 }).lean();
 
+            let aiDetails = {
+                childName: tour.childName || '',
+                childAge: tour.childAge || '',
+                purpose: tour.reason || 'Enrollment Inquiry',
+                questionsAsked: [],
+                notes: ''
+            };
+
             if (linkedWebhook) {
-                callSummary = linkedWebhook.summary || '';
-                // Highlights from summary or extracted notes
-                highlights = linkedWebhook.tour_booking_extracted?.notes || callSummary;
-
-                // Aggressive Questions extraction (look for user questions in transcript)
-                if (Array.isArray(linkedWebhook.transcript)) {
-                    const userMsgs = linkedWebhook.transcript.filter(t => t.role === 'user');
-                    questionsAsked = userMsgs
-                        .map(t => (t.message || t.text || '').trim())
-                        .filter(msg => {
-                            const low = msg.toLowerCase();
-                            return msg.endsWith('?') ||
-                                low.startsWith('what') || low.startsWith('how') ||
-                                low.startsWith('can') || low.startsWith('do ') ||
-                                low.startsWith('does ') || low.startsWith('is ') ||
-                                low.startsWith('are ') || low.startsWith('tell me');
-                        })
-                        .slice(0, 10); // Capture more questions
-                }
-
-                // Expand a generic "book a tour" reason using keywords from summary/transcript
-                const fullText = (callSummary + ' ' + (linkedWebhook.transcript || []).map(t => t.message || '').join(' ')).toLowerCase();
-                let expandedReason = tour.reason || 'Enrollment Inquiry';
-
-                const keywords = [
-                    { key: 'infant', label: 'Infant Room' },
-                    { key: 'toddler', label: 'Toddler Program' },
-                    { key: 'preschool', label: 'Preschool' },
-                    { key: 'pre-k', label: 'Pre-K' },
-                    { key: 'price', label: 'Pricing/Tuition' },
-                    { key: 'tuition', label: 'Pricing/Tuition' },
-                    { key: 'availability', label: 'Availability' },
-                    { key: 'waitlist', label: 'Waitlist Inquiry' },
-                    { key: 'curriculum', label: 'Curriculum' },
-                    { key: 'hours', label: 'Hours/Schedule' }
-                ];
-
-                const foundDetails = keywords.filter(kw => fullText.includes(kw.key)).map(kw => kw.label);
-                if (foundDetails.length > 0) {
-                    expandedReason = `${expandedReason} (${foundDetails.join(', ')})`;
-                }
-                tour.reason = expandedReason;
-
-                // If tour child info is missing, try to fill from webhook
-                if (!tour.childAge && linkedWebhook.tour_booking_extracted?.childAge) {
-                    tour.childAge = linkedWebhook.tour_booking_extracted.childAge;
+                const transcriptText = Array.isArray(linkedWebhook.transcript) 
+                    ? linkedWebhook.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                    : '';
+                
+                if (transcriptText) {
+                    const extracted = await extractTourDetails(transcriptText, {
+                        childName: tour.childName,
+                        childAge: tour.childAge,
+                        purpose: tour.reason
+                    });
+                    
+                    const safeStr = (v) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v || ''));
+                    
+                    aiDetails = {
+                        childName: safeStr(extracted.childName || extracted["Child Name"] || aiDetails.childName),
+                        childAge: safeStr(extracted.childAge || extracted["Child Age/Grade"] || aiDetails.childAge),
+                        purpose: safeStr(extracted.purpose || extracted["Purpose of Visit"] || aiDetails.purpose),
+                        questionsAsked: Array.isArray(extracted.questionsAsked || extracted["Key Questions Asked"])
+                            ? (extracted.questionsAsked || extracted["Key Questions Asked"]).map(q => safeStr(q))
+                            : [],
+                        notes: safeStr(extracted.notes || extracted["Additional Notes"] || linkedWebhook.summary || '')
+                    };
                 }
             }
 
@@ -634,19 +608,26 @@ router.get('/daily-insights', async (req, res) => {
                 parentName: tour.parentName || linkedWebhook?.tour_booking_extracted?.name || 'Parent',
                 phone: tour.phone || linkedWebhook?.metadata?.phone_call?.from_number || '',
                 email: tour.email || linkedWebhook?.tour_booking_extracted?.email || '',
-                childName: tour.childName || linkedWebhook?.tour_booking_extracted?.childName || '',
-                childAge: tour.childAge || '',
-                reason: tour.reason,
+                childName: aiDetails.childName,
+                childAge: aiDetails.childAge,
+                reason: aiDetails.purpose,
                 scheduledAt: tour.scheduledAt,
                 calendarProvider: tour.calendarProvider || null,
-                questionsAsked,
-                highlights,
-                callSummary,
+                questionsAsked: aiDetails.questionsAsked,
+                highlights: aiDetails.notes,
+                callSummary: linkedWebhook?.summary || '',
                 reminderSent: tour.reminderSent || false,
             };
         }));
 
-        res.json({ needsAttention, todaysTours });
+        const todayCalls = todayWebhooks.map(wh => ({
+            id: wh._id.toString(),
+            timestamp: wh.metadata?.start_time_unix_secs
+                ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                : wh.received_at,
+        }));
+
+        res.json({ needsAttention, todaysTours, wordCloud, todayCalls });
     } catch (err) {
         console.error('Daily insights error:', err);
         res.status(500).json({ error: 'Internal server error' });
