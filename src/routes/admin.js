@@ -349,63 +349,110 @@ router.delete('/phone-numbers/:id', async (req, res) => {
     }
 });
 
-// POST /api/admin/schools/:id/assign-number - Assign an imported number to a school
+// POST /api/admin/schools/:id/assign-number - Assign or Unassign an imported number to a school
 router.post('/schools/:id/assign-number', async (req, res) => {
     try {
         const { id } = req.params;
-        const { phoneNumberId } = req.body;
+        const { phoneNumberId, agentId } = req.body;
 
-        console.log(`[Assign Phone] Request received for School: ${id}, PhoneNumber Doc: ${phoneNumberId}`);
+        console.log(`[Assign/Unassign Phone] Request for School: ${id}, Phone: ${phoneNumberId}, Agent: ${agentId}`);
 
-        const [school, phoneNum] = await Promise.all([
-            School.findById(id),
-            PhoneNumber.findById(phoneNumberId)
-        ]);
-
+        const school = await School.findById(id);
         if (!school) return res.status(404).json({ error: 'School not found' });
-        if (!phoneNum) return res.status(404).json({ error: 'Phone number not found' });
 
+        // CASE 1: UNASSIGN TRIGGERED (If agentId is explicitly null OR phoneNumberId is explicitly null)
+        if (agentId === null || phoneNumberId === null) {
+            const currentPhoneId = school.agentPhoneNumberId;
+            if (!currentPhoneId) {
+                // If nothing to unassign, just return success
+                return res.json({ success: true, message: 'No number was assigned to this school' });
+            }
+
+            console.log(`[Unassign Phone] Removing number ${currentPhoneId} from school ${school.name}...`);
+
+            // 1. Reconcile with ElevenLabs (remove agent association)
+            try {
+                await updatePhoneNumber(currentPhoneId, { agent_id: null });
+            } catch (elError) {
+                console.warn(`[Unassign Phone] ElevenLabs dissociation warning (ignoring):`, elError.message);
+            }
+
+            // 2. Clear PhoneNumber record association
+            await PhoneNumber.findOneAndUpdate(
+                { phone_number_id: currentPhoneId },
+                { schoolId: null }
+            );
+
+            // 3. Clear School record association
+            school.aiNumber = '';
+            school.agentPhoneNumberId = '';
+            await school.save();
+
+            return res.json({ success: true, message: 'Phone number unassigned successfully' });
+        }
+
+        // CASE 2: ASSIGN TRIGGERED
+        if (!phoneNumberId) {
+            return res.status(400).json({ error: 'phoneNumberId is required for assignment' });
+        }
+
+        const phoneNum = await PhoneNumber.findById(phoneNumberId);
+        if (!phoneNum) return res.status(404).json({ error: 'Phone number record not found' });
+
+        // Consistency check: Is this number assigned to someone else?
         if (phoneNum.schoolId && phoneNum.schoolId.toString() !== id) {
             return res.status(400).json({ error: 'This number is already assigned to another school' });
         }
 
-        // 1. If school already has a number, unassign the old one
-        if (school.agentPhoneNumberId) {
+        // 1. Cleanup: If the school has a DIFFERENT number assigned, unassign it first
+        if (school.agentPhoneNumberId && school.agentPhoneNumberId !== phoneNum.phone_number_id) {
+            console.log(`[Assign Phone] Cleaning up old assignment for school: ${school.agentPhoneNumberId}`);
+            try {
+                await updatePhoneNumber(school.agentPhoneNumberId, { agent_id: null });
+            } catch (err) {
+                console.warn(`[Assign Phone] Old dissociation warning:`, err.message);
+            }
             await PhoneNumber.findOneAndUpdate(
                 { phone_number_id: school.agentPhoneNumberId },
                 { schoolId: null }
             );
         }
 
-        // 2. Assign new number
+        // 2. Perform local assignment
         school.aiNumber = phoneNum.phone_number;
         school.agentPhoneNumberId = phoneNum.phone_number_id;
-
         await school.save();
 
-        // 2.1 Update ElevenLabs Phone Number with the Agent ID
+        // 3. Reconcile with ElevenLabs
         if (school.elevenlabsAgentId) {
-            console.log(`[Assign Phone] Linking Agent ID ${school.elevenlabsAgentId} to Phone ID ${phoneNum.phone_number_id}...`);
+            console.log(`[Assign Phone] Linking Agent ${school.elevenlabsAgentId} to Number ${phoneNum.phone_number_id}...`);
             try {
                 const elResult = await updatePhoneNumber(phoneNum.phone_number_id, {
                     agent_id: school.elevenlabsAgentId
                 });
-                console.log(`[Assign Phone] ElevenLabs Link Success:`, JSON.stringify(elResult, null, 2));
+                console.log(`[Assign Phone] ElevenLabs Reconcile Success`);
             } catch (elError) {
-                console.warn(`[Assign Phone] Failed to link agent ${school.elevenlabsAgentId} to number ${phoneNum.phone_number_id}:`, elError.message);
-                // We proceed anyway as the local mapping is done, but log the warning
+                console.error(`[Assign Phone] ElevenLabs link failed:`, elError.message);
+                // We return 500 here because assignment failed at the voice provider level
+                return res.status(500).json({ 
+                    error: `ElevenLabs Linking Failed: ${elError.message}. Please check if the Agent ID is valid in ElevenLabs.` 
+                });
             }
         } else {
-            console.warn(`[Assign Phone] No ElevenLabs Agent ID found for school ${school.name}, skipping ElevenLabs linking`);
+            console.warn(`[Assign Phone] Skipping ElevenLabs link: No agent ID configured for school ${school.name}`);
         }
 
-        // 3. Update PhoneNumber doc
+        // 4. Update PhoneNumber doc mapping
         phoneNum.schoolId = school._id;
         await phoneNum.save();
 
-        res.json({ success: true, message: 'Phone number assigned successfully', aiNumber: school.aiNumber });
+        res.json({ 
+            success: true, 
+            message: 'Phone number assigned successfully', 
+            aiNumber: school.aiNumber 
+        });
     } catch (err) {
-        console.error('Assign Phone Number error:', err);
+        console.error('Assign Phone Number overall error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
