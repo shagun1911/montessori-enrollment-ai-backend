@@ -6,7 +6,12 @@ const integrationSchema = new mongoose.Schema({
     name: { type: String, required: true },
     connected: { type: Boolean, default: false },
     connectedAt: { type: Date, default: null },
-    config: { type: Object, default: {} },
+    config: { 
+        type: Object, 
+        default: {
+            msalCache: { type: String, default: null }
+        } 
+    },
 }, { timestamps: true });
 
 integrationSchema.index({ schoolId: 1, type: 1 }, { unique: true });

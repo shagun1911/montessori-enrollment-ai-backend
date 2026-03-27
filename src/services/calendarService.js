@@ -2,7 +2,7 @@ require('dotenv').config();
 const { google } = require('googleapis');
 const axios = require('axios');
 const mongoose = require('mongoose');
-const { pca } = require('../routes/integrations');
+const { pca, getMsalClient } = require('../routes/integrations');
 const Integration = require('../models/Integration');
 const TourBooking = require('../models/TourBooking');
 
@@ -500,10 +500,12 @@ async function refreshOutlookToken(integration) {
 
     let accessToken = integration.config.accessToken;
     const account = integration.config.account;
+    const schoolId = integration.schoolId;
 
     if (!account) return accessToken;
 
-    if (!pca) {
+    const schoolPca = getMsalClient(schoolId) || pca;
+    if (!schoolPca) {
         console.warn('[Calendar] MSAL not configured, returning existing token.');
         return accessToken;
     }
@@ -513,12 +515,12 @@ async function refreshOutlookToken(integration) {
             account: account,
             scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
         };
-        const response = await pca.acquireTokenSilent(silentRequest);
+        const response = await schoolPca.acquireTokenSilent(silentRequest);
         
         // If the token was refreshed, update the DB
         if (response.accessToken && response.accessToken !== accessToken) {
             accessToken = response.accessToken;
-            console.log(`[Calendar] Outlook tokens refreshed for school: ${integration.schoolId}`);
+            console.log(`[Calendar] Outlook tokens refreshed and persisted for school: ${schoolId}`);
             
             await Integration.updateOne(
                 { _id: integration._id },
@@ -532,9 +534,14 @@ async function refreshOutlookToken(integration) {
             );
         }
     } catch (error) {
-        console.error('[Calendar] MSAL acquireTokenSilent error (Token may be expired or revoked):', error.message);
-        // We will just let the existing accessToken be returned. The subsequent API call will fail natively.
-        // The user will see 'Lifetime validation failed, the token is expired' and will have to re-auth.
+        // If it's a "no_tokens_found" error, it means the cache was empty, but now it should be loaded if it existed.
+        // However, acquireTokenSilent is supposed to handle that if the cache plugin is working.
+        if (error.name === 'InteractionRequiredAuthError' || error.message.includes('no_tokens_found')) {
+            console.warn(`[Calendar] Outlook re-auth required for school ${schoolId}:`, error.message);
+        } else {
+            console.error('[Calendar] MSAL acquireTokenSilent error:', error.message);
+        }
+        // We return the existing token and let the caller handle the 401 if it's actually expired.
     }
 
     return accessToken;

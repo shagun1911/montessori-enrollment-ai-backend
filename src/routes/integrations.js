@@ -3,6 +3,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const msal = require('@azure/msal-node');
 const Integration = require('../models/Integration');
+const { createMsalCachePlugin } = require('../utils/msalTokenCache');
 
 const router = express.Router();
 
@@ -47,24 +48,40 @@ const msalConfig = {
     },
 };
 
+/**
+ * Helper to get a school-specific MSAL ConfidentialClientApplication with persistent caching.
+ */
+function getMsalClient(schoolId) {
+    if (!process.env.OUTLOOK_CLIENT_ID) return null;
+    
+    const clientConfig = {
+        ...msalConfig,
+        cache: {
+            cachePlugin: createMsalCachePlugin(schoolId)
+        }
+    };
+    return new msal.ConfidentialClientApplication(clientConfig);
+}
+
+// Keep a default instance for general use (like getting auth URL if schoolId is not yet known, though we usually have it)
 let pca;
 try {
     pca = new msal.ConfidentialClientApplication(msalConfig);
 } catch (e) {
-    console.warn('[Integrations] MSAL init skipped (Outlook not configured):', e.message);
+    console.warn('[Integrations] MSAL default init skipped:', e.message);
 }
 
 async function getOutlookAuthUrl(schoolId) {
-    if (!pca || !process.env.OUTLOOK_CLIENT_ID) {
-        return null; // Not configured
-    }
+    const schoolPca = getMsalClient(schoolId) || pca;
+    if (!schoolPca) return null;
+
     const authCodeUrlParameters = {
         scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
         redirectUri: process.env.OUTLOOK_REDIRECT_URI,
         state: schoolId.toString(),
         prompt: 'select_account',
     };
-    return await pca.getAuthCodeUrl(authCodeUrlParameters);
+    return await schoolPca.getAuthCodeUrl(authCodeUrlParameters);
 }
 
 // ── Google OAuth Callback ──
@@ -149,13 +166,10 @@ router.get('/outlook/callback', async (req, res) => {
 
     try {
         const schoolId = state;
-        const tokenRequest = {
-            code,
-            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
-            redirectUri: process.env.OUTLOOK_REDIRECT_URI,
-        };
+        const schoolPca = getMsalClient(schoolId);
+        if (!schoolPca) throw new Error('MSAL not configured');
 
-        const response = await pca.acquireTokenByCode(tokenRequest);
+        const response = await schoolPca.acquireTokenByCode(tokenRequest);
         
         await Integration.findOneAndUpdate(
             { schoolId, type: 'outlook' },
@@ -184,5 +198,6 @@ module.exports = {
     router,
     getGoogleAuthUrl,
     getOutlookAuthUrl,
+    getMsalClient,
     pca,
 };
