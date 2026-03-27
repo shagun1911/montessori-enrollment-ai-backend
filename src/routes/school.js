@@ -520,7 +520,7 @@ router.get('/daily-insights', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
         const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
-        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const school = await School.findById(schoolId).select('aiNumber wordCloud').lean();
         const normalizePhone = (p) => (p || '').replace(/\D/g, '');
         const schoolAiNumber = normalizePhone(school?.aiNumber || '');
         const userToken = req.headers.authorization?.split(' ')[1] || '';
@@ -547,30 +547,8 @@ router.get('/daily-insights', async (req, res) => {
             ]
         }).sort({ received_at: -1 }).lean();
 
-        // Extract transcripts for word cloud (last 30 days)
-        const wordCloudWebhooks = await ElevenLabsWebhook.find({
-            type: 'post_call_transcription',
-            received_at: { $gte: wordCloudStart, $lte: todayEnd },
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
-        })
-            .select('transcript')
-            .sort({ received_at: -1 })
-            .limit(500)
-            .lean();
-
-        const allTranscripts = wordCloudWebhooks
-            .map(wh =>
-                Array.isArray(wh.transcript)
-                    ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
-                    : ''
-            )
-            .filter(Boolean);
-
-        const wordCloud = await generateWordCloud(allTranscripts);
+        // Use cached word cloud from School model
+        const wordCloud = school?.wordCloud || [];
 
         const needsAttention = todayWebhooks
             .filter(wh => !wh.tour_booking_detected)
@@ -722,6 +700,53 @@ router.get('/daily-insights', async (req, res) => {
         res.json({ needsAttention, todaysTours, wordCloud, todayCalls });
     } catch (err) {
         console.error('Daily insights error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/school/wordcloud/generate - Manually trigger word cloud generation
+router.post('/wordcloud/generate', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const normalizePhone = (p) => (p || '').replace(/\D/g, '');
+        const schoolAiNumber = normalizePhone(school?.aiNumber || '');
+
+        const wordCloudStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        const wordCloudWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            received_at: { $gte: wordCloudStart, $lte: todayEnd },
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        })
+            .select('transcript')
+            .sort({ received_at: -1 })
+            .limit(500)
+            .lean();
+
+        const allTranscripts = wordCloudWebhooks
+            .map(wh =>
+                Array.isArray(wh.transcript)
+                    ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                    : ''
+            )
+            .filter(Boolean);
+
+        const wordCloud = await generateWordCloud(allTranscripts);
+        
+        // Save to school
+        await School.findByIdAndUpdate(schoolId, { wordCloud });
+
+        res.json({ wordCloud });
+    } catch (err) {
+        console.error('Word cloud generation error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

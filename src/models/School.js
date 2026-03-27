@@ -31,7 +31,9 @@ const schoolSchema = new mongoose.Schema({
     agentPhoneNumberId: { type: String, default: '' }, // Associated SIP trunk number ID
     // Tour confirmation templates
     tourConfirmationEmailTemplate: { type: String, default: 'Dear {parent_name},\n\nYour tour at {school_name} has been scheduled for {tour_date}.\n\nLocation: {school_address}\n\nWe look forward to seeing you!\n\nWarm regards,\n{school_name}' },
-    tourReminderSmsTemplate: { type: String, default: 'Hi {parent_name}, this is a reminder for your tour at {school_name} tomorrow, {tour_date}. See you then!' }
+    tourReminderSmsTemplate: { type: String, default: 'Hi {parent_name}, this is a reminder for your tour at {school_name} tomorrow, {tour_date}. See you then!' },
+    // Analytics
+    wordCloud: { type: Array, default: [] }
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);

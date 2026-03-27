@@ -8,6 +8,7 @@ const TourBooking = require('../models/TourBooking');
 const Followup = require('../models/Followup');
 const Integration = require('../models/Integration');
 const { processTranscript } = require('../services/openaiService');
+const { generateWordCloud } = require('../utils/openai');
 const { createCalendarEvent, isSlotAvailable } = require('../services/calendarService');
 const { sendEmail } = require('../services/mailService');
 const { generateICS } = require('../utils/ics');
@@ -145,6 +146,12 @@ async function processWebhookAsync(payload) {
             processTranscriptWithAI(savedWebhook._id, data.transcript).catch(err => {
                 console.error('[Webhook] Error in AI processing:', err);
             });
+            // Update word cloud for the school in the background
+            if (schoolId) {
+                updateWordCloudForSchool(schoolId).catch(err => {
+                    console.error('[Webhook] Error updating word cloud:', err);
+                });
+            }
         }
 
     } catch (err) {
@@ -798,6 +805,53 @@ Childcare Enrollment AI Platform`;
     } catch (err) {
         console.error('[Webhook Email] Error sending admin email notification:', err.message);
         // Don't throw - email failure shouldn't break webhook processing
+    }
+}
+
+/**
+ * Update the Word Cloud for a school asynchronously
+ */
+async function updateWordCloudForSchool(schoolId) {
+    try {
+        const school = await School.findById(schoolId).select('aiNumber').lean();
+        if (!school) return;
+
+        const normalizePhone = (p) => (p || '').replace(/\D/g, '');
+        const schoolAiNumber = normalizePhone(school.aiNumber || '');
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
+        const wordCloudStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        const wordCloudWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            received_at: { $gte: wordCloudStart, $lte: todayEnd },
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        })
+            .select('transcript')
+            .sort({ received_at: -1 })
+            .limit(500)
+            .lean();
+
+        const allTranscripts = wordCloudWebhooks
+            .map(wh =>
+                Array.isArray(wh.transcript)
+                    ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                    : ''
+            )
+            .filter(Boolean);
+
+        const wordCloud = await generateWordCloud(allTranscripts);
+        
+        await School.findByIdAndUpdate(schoolId, { wordCloud });
+        console.log(`[WordCloud] Successfully updated word cloud for school ${schoolId}`);
+    } catch (error) {
+        console.error(`[WordCloud] Error updating word cloud for school ${schoolId}:`, error);
     }
 }
 
