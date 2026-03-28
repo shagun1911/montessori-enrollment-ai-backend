@@ -511,37 +511,67 @@ async function refreshOutlookToken(integration) {
     }
 
     try {
+        // Bug 3 Fix: Load accounts from MSAL's own cache (hydrated via beforeCacheAccess plugin)
+        // instead of relying on the potentially-stale account object stored in the DB.
+        const tokenCache = schoolPca.getTokenCache();
+        const allAccounts = await tokenCache.getAllAccounts();
+        const cachedAccount = allAccounts.find(a => a.username === account?.username) || allAccounts[0] || account;
+
         const silentRequest = {
-            account: account,
+            account: cachedAccount,
             scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
+            forceRefresh: false,
         };
         const response = await schoolPca.acquireTokenSilent(silentRequest);
-        
+
         // If the token was refreshed, update the DB
         if (response.accessToken && response.accessToken !== accessToken) {
             accessToken = response.accessToken;
             console.log(`[Calendar] Outlook tokens refreshed and persisted for school: ${schoolId}`);
-            
+
             await Integration.updateOne(
                 { _id: integration._id },
-                { 
-                    $set: { 
+                {
+                    $set: {
                         'config.accessToken': accessToken,
                         'config.account': response.account,
                         'config.expiresOn': response.expiresOn,
-                    } 
+                    }
                 }
             );
+
+            // Also persist the updated MSAL cache (contains the new refresh token)
+            try {
+                const msalCache = tokenCache.serialize();
+                await Integration.updateOne(
+                    { _id: integration._id },
+                    { $set: { 'config.msalCache': msalCache } }
+                );
+            } catch (cacheErr) {
+                console.error('[Calendar] Failed to persist refreshed MSAL cache:', cacheErr.message);
+            }
         }
     } catch (error) {
-        // If it's a "no_tokens_found" error, it means the cache was empty, but now it should be loaded if it existed.
-        // However, acquireTokenSilent is supposed to handle that if the cache plugin is working.
-        if (error.name === 'InteractionRequiredAuthError' || error.message.includes('no_tokens_found')) {
-            console.warn(`[Calendar] Outlook re-auth required for school ${schoolId}:`, error.message);
+        // Bug 4 Fix: If truly unrecoverable (interaction required, tokens gone, or lifetime expired),
+        // mark the integration as disconnected so the school knows to reconnect — instead of
+        // silently returning the already-expired access token which will cause 401s downstream.
+        const isHardFailure =
+            error.name === 'InteractionRequiredAuthError' ||
+            error.message?.includes('no_tokens_found') ||
+            error.message?.includes('Lifetime validation failed') ||
+            error.message?.includes('invalid_grant');
+
+        if (isHardFailure) {
+            console.warn(`[Calendar] Outlook token unrecoverable for school ${schoolId}. Marking disconnected. Error: ${error.message}`);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { connected: false } }
+            );
+            return null; // Caller will log "Outlook not authorized or token expired"
         } else {
-            console.error('[Calendar] MSAL acquireTokenSilent error:', error.message);
+            console.error('[Calendar] MSAL acquireTokenSilent transient error:', error.message);
+            // Transient error — return existing token optimistically; it may still be valid
         }
-        // We return the existing token and let the caller handle the 401 if it's actually expired.
     }
 
     return accessToken;

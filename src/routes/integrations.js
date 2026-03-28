@@ -169,8 +169,14 @@ router.get('/outlook/callback', async (req, res) => {
         const schoolPca = getMsalClient(schoolId);
         if (!schoolPca) throw new Error('MSAL not configured');
 
+        // Bug 1 Fix: Define tokenRequest before calling acquireTokenByCode
+        const tokenRequest = {
+            code,
+            redirectUri: process.env.OUTLOOK_REDIRECT_URI,
+            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
+        };
         const response = await schoolPca.acquireTokenByCode(tokenRequest);
-        
+
         await Integration.findOneAndUpdate(
             { schoolId, type: 'outlook' },
             {
@@ -186,6 +192,19 @@ router.get('/outlook/callback', async (req, res) => {
             },
             { upsert: true }
         );
+
+        // Bug 2 Fix: Explicitly save the MSAL token cache (includes refresh token) to DB
+        // so acquireTokenSilent can find it on future calls without requiring re-auth.
+        try {
+            const msalCache = schoolPca.getTokenCache().serialize();
+            await Integration.updateOne(
+                { schoolId, type: 'outlook' },
+                { $set: { 'config.msalCache': msalCache } }
+            );
+            console.log(`[Integrations] Outlook MSAL cache persisted for school: ${schoolId}`);
+        } catch (cacheErr) {
+            console.error('[Integrations] Failed to persist MSAL cache:', cacheErr.message);
+        }
 
         res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=outlook`);
     } catch (err) {
