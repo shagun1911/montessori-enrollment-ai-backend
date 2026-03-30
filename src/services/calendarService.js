@@ -251,7 +251,7 @@ async function getBusinessHoursRange(schoolId, dateStr) {
 }
 
 /**
- * Get free slots for a given day (business hours, 15-min blocks, excluding busy slots).
+ * Get free slots for a given day (business hours, 30-min blocks, excluding busy slots).
  * @param {string} schoolId
  * @param {string} dateStr - YYYY-MM-DD
  * @param {object} businessHours - { start: '09:00', end: '17:00' }
@@ -265,11 +265,11 @@ async function getFreeSlots(schoolId, dateStr, businessHours = { start: '09:00',
     if (error) return { freeSlots: [], error };
 
     const freeSlots = [];
-    const blockMs = 15 * 60 * 1000;
+    const blockMs = 30 * 60 * 1000;
     const now = new Date();
     
-    // Add a 15-min buffer if checking for today
-    const minTime = now.getTime() + (15 * 60 * 1000); 
+    // Add a 30-min buffer if checking for today
+    const minTime = now.getTime() + (30 * 60 * 1000); 
 
     let slotStart = new Date(rangeStart);
     while (slotStart.getTime() + blockMs <= rangeEnd.getTime()) {

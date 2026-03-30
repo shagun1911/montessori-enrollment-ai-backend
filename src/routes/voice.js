@@ -74,7 +74,7 @@ router.get('/agent-config', async (req, res) => {
     }
 });
 
-// GET /api/voice/availability - No auth. Agent calls to get free 15-min slots for a day (respects blocked times, no overlaps).
+// GET /api/voice/availability - No auth. Agent calls to get free 30-min slots for a day (respects blocked times, no overlaps).
 // Query: schoolId=xxx&date=YYYY-MM-DD
 router.get('/availability', async (req, res) => {
     try {
@@ -223,7 +223,7 @@ router.post('/call-end', async (req, res) => {
                 if (start < now) {
                     tourError = 'Cannot book a tour for a past date. Please select a future date and time.';
                 } else {
-                    const end = new Date(start.getTime() + 15 * 60 * 1000); // 15-min block (per Phase 1 spec)
+                    const end = new Date(start.getTime() + 30 * 60 * 1000); // 30-min block
                     const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
                     if (!available) {
                         tourError = slotError || 'That time is no longer available or overlaps an existing event.';

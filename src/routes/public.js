@@ -126,7 +126,7 @@ router.get('/book-tour/:schoolId', async (req, res) => {
     }
 });
 
-// GET /api/public/book-tour/:schoolId/slots?date=YYYY-MM-DD - Free 15-min slots
+// GET /api/public/book-tour/:schoolId/slots?date=YYYY-MM-DD - Free 30-min slots
 router.get('/book-tour/:schoolId/slots', async (req, res) => {
     try {
         const { schoolId } = req.params;
@@ -175,7 +175,7 @@ router.post('/book-tour/:schoolId', async (req, res) => {
             return res.status(400).json({ error: 'Cannot book a tour for a past date. Please select a future date and time.' });
         }
 
-        const end = new Date(start.getTime() + 15 * 60 * 1000);
+        const end = new Date(start.getTime() + 30 * 60 * 1000);
 
         const { available, error: slotError } = await isSlotAvailable(schoolId, start, end);
         if (!available) {
