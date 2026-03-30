@@ -382,7 +382,8 @@ Confirm contact details.
 Close politely.
 `;
 
-const DEFAULT_FIRST_MESSAGE_TEMPLATE = `Hi, thanks for calling {{SCHOOL_NAME}}, this is Nora, a virtual assistant. How can I help you today?`;
+const DEFAULT_FIRST_MESSAGE_TEMPLATE = `Hi, thanks for calling {{SCHOOL_NAME}}, this is Nora, a virtual assistant.
+You can speak in English or Spanish — si prefiere, puede hablar en español. ¿Le puedo ayudar en algo? How can I help you today?`;
 
 async function createSchoolAgent(schoolName, knowledgeBaseId = null, toolIds = []) {
     const baseUrl = process.env.ELEVENLABS_API_URL;

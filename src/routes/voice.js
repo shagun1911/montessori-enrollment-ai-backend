@@ -60,7 +60,7 @@ router.get('/agent-config', async (req, res) => {
         res.json({
             schoolId: school._id.toString(),
             schoolName: school.name,
-            script: school.script || 'Welcome to our school. How can I help you today?',
+            script: school.script || "Hi, thanks for calling our school, this is Nora, a virtual assistant.\nYou can speak in English or Spanish — si prefiere, puede hablar en español. ¿Le puedo ayudar en algo? How can I help you today?",
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
             formLink,

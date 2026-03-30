@@ -7,7 +7,7 @@ const schoolSchema = new mongoose.Schema({
     escalationNumber: { type: String, default: '' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     language: { type: String, enum: ['EN', 'ES'], default: 'EN' },
-    script: { type: String, default: 'Welcome to our school. How can I help you today?' },
+    script: { type: String, default: "Hi, thanks for calling our school, this is Nora, a virtual assistant.\nYou can speak in English or Spanish — si prefiere, puede hablar en español. ¿Le puedo ayudar en algo? How can I help you today?" },
     systemPrompt: { type: String, default: '' }, // System prompt for agent configuration
     businessHoursStart: { type: String, default: '09:00' },
     businessHoursEnd: { type: String, default: '17:00' },
