@@ -3,7 +3,7 @@ const FormData = require('form-data');
 
 const APPOINTMENT_AGENT_PROMPT = ``;
 
-const GLOBAL_TIME_TOOL_ID = "tool_4001kkxge4t2evz966hh6prccnhx";
+const GLOBAL_TIME_TOOL_ID = "tool_1801kmyr9pdpemts5qr0f1xys3yy";
 
 const NORA_SYSTEM_PROMPT_TEMPLATE = `You are Nora, a warm and friendly virtual scheduling assistant for a school
 tour booking system. Your job is to collect parent information and book a

@@ -6,11 +6,11 @@ const User = require('../models/User');
 const School = require('../models/School');
 const Integration = require('../models/Integration');
 const { authMiddleware } = require('../middleware/auth');
-const { 
-    createSchoolAgent, 
-    registerTool, 
-    patchAgentPrompt, 
-    formatQAPairsForKB, 
+const {
+    createSchoolAgent,
+    registerTool,
+    patchAgentPrompt,
+    formatQAPairsForKB,
     ingestKnowledgeBaseDocument,
     NORA_SYSTEM_PROMPT_TEMPLATE,
     DEFAULT_FIRST_MESSAGE_TEMPLATE
@@ -25,7 +25,7 @@ const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 // GOOGLE_AUTH_REDIRECT_URI for authentication (frontend), GOOGLE_REDIRECT_URI for calendar integrations (backend)
 // If not set, construct from FORM_BASE_URL or default to localhost
-const googleAuthRedirectUri = process.env.GOOGLE_AUTH_REDIRECT_URI 
+const googleAuthRedirectUri = process.env.GOOGLE_AUTH_REDIRECT_URI
     || `${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/auth/google/callback`;
 
 let oauth2Client = null;
@@ -157,11 +157,11 @@ router.post('/register', async (req, res) => {
         const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
         if (agentId) {
             school.elevenlabsAgentId = agentId;
-            
+
             // Register booked-slots tool
             const toolId = await registerTool(school._id.toString(), agentId);
             if (toolId) {
-                const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                const globalTimeToolId = "tool_1801kmyr9pdpemts5qr0f1xys3yy";
                 // Link tools to agent (both the school-specific and global time tool)
                 await patchAgentPrompt(agentId, {
                     tool_ids: [toolId, globalTimeToolId],
@@ -170,7 +170,7 @@ router.post('/register', async (req, res) => {
                 });
                 console.log(`[Register] Tools linked to Agent ${agentId}:`, [toolId, globalTimeToolId]);
             }
-            
+
             await school.save();
         }
 
@@ -307,7 +307,7 @@ router.post('/google/callback', async (req, res) => {
         }
 
         // Check if user exists
-        let user = await User.findOne({ 
+        let user = await User.findOne({
             $or: [
                 { email },
                 { googleId }
@@ -361,7 +361,7 @@ router.post('/google/callback', async (req, res) => {
             const { schoolName, address } = req.body;
 
             if (!schoolName) {
-                return res.json({ 
+                return res.json({
                     requiresSchoolInfo: true,
                     email,
                     name,
@@ -399,18 +399,18 @@ router.post('/google/callback', async (req, res) => {
             const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
             if (agentId) {
                 school.elevenlabsAgentId = agentId;
-                
+
                 // Register booked-slots tool
                 const toolId = await registerTool(school._id.toString(), agentId);
                 if (toolId) {
-                    const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                    const globalTimeToolId = "tool_1801kmyr9pdpemts5qr0f1xys3yy";
                     await patchAgentPrompt(agentId, {
                         tool_ids: [toolId, globalTimeToolId],
                         post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
                         voice_id: "jqcCZkN6Knx8BJ5TBdYR",
                     });
                 }
-                
+
                 await school.save();
             }
 
@@ -472,7 +472,7 @@ router.post('/google/complete-signup', async (req, res) => {
         }
 
         // Check if user already exists
-        const existingUser = await User.findOne({ 
+        const existingUser = await User.findOne({
             $or: [
                 { email },
                 { googleId }
@@ -513,18 +513,18 @@ router.post('/google/complete-signup', async (req, res) => {
         const agentId = await createSchoolAgent(schoolName, school.knowledgeBaseDocumentId);
         if (agentId) {
             school.elevenlabsAgentId = agentId;
-            
+
             // Register booked-slots tool
             const toolId = await registerTool(school._id.toString(), agentId);
             if (toolId) {
-                const globalTimeToolId = "tool_4001kkxge4t2evz966hh6prccnhx";
+                const globalTimeToolId = "tool_1801kmyr9pdpemts5qr0f1xys3yy";
                 await patchAgentPrompt(agentId, {
                     tool_ids: [toolId, globalTimeToolId],
                     post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
                     voice_id: "jqcCZkN6Knx8BJ5TBdYR",
                 });
             }
-            
+
             await school.save();
         }
 
