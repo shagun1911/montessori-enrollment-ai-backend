@@ -12,6 +12,7 @@ const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
 const PhoneNumber = require('../models/PhoneNumber');
+const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 const { importSipTrunk, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
 
@@ -470,6 +471,10 @@ router.delete('/schools/:id', async (req, res) => {
             return res.status(404).json({ error: 'School not found' });
         }
 
+        const normalizePhone = (p) => String(p || '').replace(/\D/g, '');
+        const schoolAiDigits = normalizePhone(school.aiNumber);
+        const voiceAiParticipantId = schoolAiDigits ? `sip_+${schoolAiDigits}` : null;
+
         const objectId = new mongoose.Types.ObjectId(id);
         await Promise.all([
             User.deleteMany({ schoolId: objectId }),
@@ -482,6 +487,29 @@ router.delete('/schools/:id', async (req, res) => {
             ReferralLink.deleteMany({ schoolId: objectId }),
             InquirySubmission.deleteMany({ schoolId: objectId }),
             TourBooking.deleteMany({ schoolId: objectId }),
+            // Clear any imported number assignments in the pool
+            PhoneNumber.updateMany({ schoolId: objectId }, { $set: { schoolId: null } }),
+            // Delete ElevenLabs webhook data used by dashboard/insights
+            ElevenLabsWebhook.deleteMany({
+                $or: [
+                    { schoolId: objectId },
+                    ...(schoolAiDigits ? [
+                        { 'metadata.phone_call.agent_number': { $regex: schoolAiDigits } },
+                        { 'metadata.phone_call.to_number': { $regex: schoolAiDigits } },
+                    ] : [])
+                ]
+            }),
+            // Best-effort: purge VoiceAI logs in benny DB (if present)
+            (async () => {
+                if (!voiceAiParticipantId) return;
+                try {
+                    const bennyDb = mongoose.connection.useDb('benny');
+                    const collection = bennyDb.collection('voiceAI');
+                    await collection.deleteMany({ participant_id: voiceAiParticipantId });
+                } catch (err) {
+                    console.warn('[Admin] VoiceAI purge warning:', err.message);
+                }
+            })(),
         ]);
         await School.findByIdAndDelete(id);
 
