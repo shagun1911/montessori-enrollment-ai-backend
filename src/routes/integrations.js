@@ -180,31 +180,22 @@ router.get('/outlook/callback', async (req, res) => {
         await Integration.findOneAndUpdate(
             { schoolId, type: 'outlook' },
             {
-                name: 'Microsoft Outlook',
-                connected: true,
-                connectedAt: new Date(),
-                config: {
-                    account: response.account,
-                    accessToken: response.accessToken,
-                    expiresOn: response.expiresOn,
-                    scopes: response.scopes,
-                },
+                $set: {
+                    name: 'Microsoft Outlook',
+                    connected: true,
+                    connectedAt: new Date(),
+                    'config.account': response.account,
+                    'config.accessToken': response.accessToken,
+                    'config.expiresOn': response.expiresOn,
+                    'config.scopes': response.scopes,
+                }
             },
             { upsert: true }
         );
 
-        // Bug 2 Fix: Explicitly save the MSAL token cache (includes refresh token) to DB
-        // so acquireTokenSilent can find it on future calls without requiring re-auth.
-        try {
-            const msalCache = schoolPca.getTokenCache().serialize();
-            await Integration.updateOne(
-                { schoolId, type: 'outlook' },
-                { $set: { 'config.msalCache': msalCache } }
-            );
-            console.log(`[Integrations] Outlook MSAL cache persisted for school: ${schoolId}`);
-        } catch (cacheErr) {
-            console.error('[Integrations] Failed to persist MSAL cache:', cacheErr.message);
-        }
+        // Success — the cache plugin (afterCacheAccess) already saved the MSAL cache (refresh token)
+        // during the acquireTokenByCode call. Using $set above preserved it.
+        console.log(`[Integrations] Outlook connected and config persisted for school: ${schoolId}`);
 
         res.redirect(`${process.env.FRONTEND_URL || process.env.FORM_BASE_URL || 'http://localhost:5173'}/school/integrations?success=outlook`);
     } catch (err) {

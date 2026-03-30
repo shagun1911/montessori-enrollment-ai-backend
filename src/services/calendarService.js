@@ -515,6 +515,11 @@ async function refreshOutlookToken(integration) {
         // instead of relying on the potentially-stale account object stored in the DB.
         const tokenCache = schoolPca.getTokenCache();
         const allAccounts = await tokenCache.getAllAccounts();
+        
+        if (allAccounts.length === 0) {
+            console.warn(`[Calendar] No accounts found in MSAL cache for school ${schoolId}. This usually means config.msalCache is missing or invalid.`);
+        }
+
         const cachedAccount = allAccounts.find(a => a.username === account?.username) || allAccounts[0] || account;
 
         const silentRequest = {
@@ -540,16 +545,9 @@ async function refreshOutlookToken(integration) {
                 }
             );
 
-            // Also persist the updated MSAL cache (contains the new refresh token)
-            try {
-                const msalCache = tokenCache.serialize();
-                await Integration.updateOne(
-                    { _id: integration._id },
-                    { $set: { 'config.msalCache': msalCache } }
-                );
-            } catch (cacheErr) {
-                console.error('[Calendar] Failed to persist refreshed MSAL cache:', cacheErr.message);
-            }
+            // Note: The MSAL cache plugin (afterCacheAccess) handles persisting the updated 
+            // msalCache string (which contains the new refresh token) automatically 
+            // because cacheHasChanged will be true after acquireTokenSilent.
         }
     } catch (error) {
         // Bug 4 Fix: If truly unrecoverable (interaction required, tokens gone, or lifetime expired),
@@ -559,7 +557,8 @@ async function refreshOutlookToken(integration) {
             error.name === 'InteractionRequiredAuthError' ||
             error.message?.includes('no_tokens_found') ||
             error.message?.includes('Lifetime validation failed') ||
-            error.message?.includes('invalid_grant');
+            error.message?.includes('invalid_grant') ||
+            error.message?.includes('invalid_token');
 
         if (isHardFailure) {
             console.warn(`[Calendar] Outlook token unrecoverable for school ${schoolId}. Marking disconnected. Error: ${error.message}`);
@@ -569,7 +568,7 @@ async function refreshOutlookToken(integration) {
             );
             return null; // Caller will log "Outlook not authorized or token expired"
         } else {
-            console.error('[Calendar] MSAL acquireTokenSilent transient error:', error.message);
+            console.error(`[Calendar] MSAL acquireTokenSilent transient error for school ${schoolId}:`, error.message);
             // Transient error — return existing token optimistically; it may still be valid
         }
     }
