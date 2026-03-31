@@ -274,6 +274,7 @@ router.get('/dashboard', async (req, res) => {
                 .lean(),
             TourBooking.find({ schoolId })
                 .select('phone parentName childName')
+                .sort({ createdAt: 1 })
                 .lean(),
         ]);
 
@@ -287,9 +288,10 @@ router.get('/dashboard', async (req, res) => {
         });
 
         // Helper to get name for a phone
-        const resolveName = (phone, fallback = 'Parent') => {
+        const resolveName = (phone, specificName = null) => {
+            if (specificName && specificName !== 'Parent') return specificName;
             const normalized = normalizePhone(phone);
-            return parentNameMap.get(normalized) || fallback;
+            return parentNameMap.get(normalized) || 'Parent';
         };
 
         adminEmailNotifications = adminEmails.map(email => ({
