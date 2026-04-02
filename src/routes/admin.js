@@ -13,6 +13,7 @@ const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
 const PhoneNumber = require('../models/PhoneNumber');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
+const AiNumberRequest = require('../models/AiNumberRequest');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 const { importSipTrunk, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
 
@@ -653,6 +654,138 @@ router.get('/referrals', async (req, res) => {
         res.json(formatted);
     } catch (err) {
         console.error('Admin referrals error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/admin/ai-number-requests - Get all AI number requests
+router.get('/ai-number-requests', async (req, res) => {
+    try {
+        const requests = await AiNumberRequest.find()
+            .sort({ requestedAt: -1 })
+            .populate('schoolId', 'name email')
+            .populate('requestedBy', 'name email')
+            .populate('resolvedBy', 'name email')
+            .lean();
+
+        res.json(requests);
+    } catch (err) {
+        console.error('Admin AI number requests error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/admin/ai-number-requests/:requestId/approve - Approve an AI number request
+router.post('/ai-number-requests/:requestId/approve', async (req, res) => {
+    try {
+        const { requestId } = req.params;
+        const { aiNumber, notes } = req.body;
+
+        if (!aiNumber) {
+            return res.status(400).json({ error: 'AI number is required' });
+        }
+
+        const request = await AiNumberRequest.findById(requestId);
+        if (!request) {
+            return res.status(404).json({ error: 'Request not found' });
+        }
+
+        if (request.status !== 'pending') {
+            return res.status(400).json({ error: 'Request has already been processed' });
+        }
+
+        // Update request
+        request.status = 'approved';
+        request.assignedAiNumber = aiNumber;
+        request.adminNotes = notes || '';
+        request.resolvedBy = req.user.id;
+        request.resolvedAt = new Date();
+        await request.save();
+
+        // Update school with AI number
+        await School.findByIdAndUpdate(request.schoolId, { 
+            aiNumber: aiNumber 
+        });
+
+        console.log(`[Admin] AI number request ${requestId} approved. Assigned: ${aiNumber}`);
+
+        res.json({ 
+            message: 'AI number request approved successfully',
+            aiNumber: aiNumber
+        });
+    } catch (err) {
+        console.error('Admin approve AI number request error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/admin/ai-number-requests/:requestId/reject - Reject an AI number request
+router.post('/ai-number-requests/:requestId/reject', async (req, res) => {
+    try {
+        const { requestId } = req.params;
+        const { notes } = req.body;
+
+        const request = await AiNumberRequest.findById(requestId);
+        if (!request) {
+            return res.status(404).json({ error: 'Request not found' });
+        }
+
+        if (request.status !== 'pending') {
+            return res.status(400).json({ error: 'Request has already been processed' });
+        }
+
+        // Update request
+        request.status = 'rejected';
+        request.adminNotes = notes || '';
+        request.resolvedBy = req.user.id;
+        request.resolvedAt = new Date();
+        await request.save();
+
+        console.log(`[Admin] AI number request ${requestId} rejected`);
+
+        res.json({ message: 'AI number request rejected successfully' });
+    } catch (err) {
+        console.error('Admin reject AI number request error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// PUT /api/admin/ai-number-requests/:requestId/mark-read - Mark request as read
+router.put('/ai-number-requests/:requestId/mark-read', async (req, res) => {
+    try {
+        const { requestId } = req.params;
+
+        const request = await AiNumberRequest.findById(requestId);
+        if (!request) {
+            return res.status(404).json({ error: 'Request not found' });
+        }
+
+        // Update request to mark as read
+        request.isRead = true;
+        await request.save();
+
+        console.log(`[Admin] AI number request ${requestId} marked as read`);
+
+        res.json({ message: 'Request marked as read successfully' });
+    } catch (err) {
+        console.error('Admin mark as read AI number request error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// DELETE /api/admin/ai-number-requests - Clear all requests
+router.delete('/ai-number-requests', async (req, res) => {
+    try {
+        const result = await AiNumberRequest.deleteMany({});
+        
+        console.log(`[Admin] Cleared ${result.deletedCount} AI number requests`);
+
+        res.json({ 
+            message: 'All AI number requests cleared successfully',
+            deletedCount: result.deletedCount
+        });
+    } catch (err) {
+        console.error('Admin clear AI number requests error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

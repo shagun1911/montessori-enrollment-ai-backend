@@ -13,6 +13,7 @@ const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const voiceAISchema = require('../models/VoiceAI');
+const AiNumberRequest = require('../models/AiNumberRequest');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { getGoogleAuthUrl, getOutlookAuthUrl } = require('./integrations');
 const { getCallDurationSeconds } = require('../utils/webhookHelpers');
@@ -1290,6 +1291,54 @@ router.put('/settings', async (req, res) => {
     } catch (err) {
         console.error('[PUT /settings] Error:', err);
         res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+});
+
+// POST /api/school/request-ai-number
+router.post('/request-ai-number', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const { schoolName } = req.body;
+
+        if (!schoolId) {
+            return res.status(400).json({ error: 'No school associated with this account' });
+        }
+
+        // Check if there's already a pending request for this school
+        const existingRequest = await AiNumberRequest.findOne({ 
+            schoolId, 
+            status: 'pending' 
+        });
+        
+        if (existingRequest) {
+            return res.status(400).json({ 
+                error: 'You already have a pending AI number request. Please wait for admin approval.' 
+            });
+        }
+
+        // Get school details
+        const school = await School.findById(schoolId);
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+
+        // Create the AI number request
+        const request = await AiNumberRequest.create({
+            schoolId: school._id,
+            schoolName: school.name || schoolName,
+            requestedBy: req.user.id,
+            status: 'pending'
+        });
+
+        console.log(`[AI Number Request] Created request ${request._id} for school: ${school.name} (${school._id})`);
+        
+        res.json({ 
+            message: 'AI number request submitted successfully. An admin will review your request shortly.',
+            requestId: request._id.toString()
+        });
+    } catch (err) {
+        console.error('[AI Number Request] Error:', err);
+        res.status(500).json({ error: 'Failed to submit AI number request' });
     }
 });
 
