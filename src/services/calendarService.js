@@ -492,8 +492,10 @@ async function createOutlookCalendarEvent(integration, { title, start, end, desc
 }
 
 /**
- * Helper to ensure the Outlook token is valid, refreshing if needed using MSAL "acquireTokenSilent".
+ * Helper to ensure Outlook token is valid, refreshing if needed using MSAL "acquireTokenSilent".
  * Updates the database token if a refresh occurs.
+ * 
+ * MAJOR FIX: Implement comprehensive token management to prevent disconnect loops
  */
 async function refreshOutlookToken(integration) {
     if (!integration || integration.type !== 'outlook' || !integration.config) return null;
@@ -502,7 +504,10 @@ async function refreshOutlookToken(integration) {
     const account = integration.config.account;
     const schoolId = integration.schoolId;
 
-    if (!account) return accessToken;
+    if (!account) {
+        console.warn(`[Calendar] No account found in Outlook integration for school ${schoolId}`);
+        return accessToken;
+    }
 
     const schoolPca = getMsalClient(schoolId) || pca;
     if (!schoolPca) {
@@ -511,68 +516,160 @@ async function refreshOutlookToken(integration) {
     }
 
     try {
-        // Bug 3 Fix: Load accounts from MSAL's own cache (hydrated via beforeCacheAccess plugin)
-        // instead of relying on the potentially-stale account object stored in the DB.
-        const tokenCache = schoolPca.getTokenCache();
-        const allAccounts = await tokenCache.getAllAccounts();
+        // Step 1: Check if token is expired before attempting refresh
+        const expiresOn = integration.config.expiresOn ? new Date(integration.config.expiresOn) : null;
+        const now = new Date();
+        const bufferMinutes = 5; // 5-minute buffer before expiry
         
+        if (expiresOn && (expiresOn.getTime() - bufferMinutes * 60 * 1000) > now.getTime()) {
+            console.log(`[Calendar] Outlook token still valid for school ${schoolId}, expires: ${expiresOn.toISOString()}`);
+            return accessToken;
+        }
+
+        console.log(`[Calendar] Outlook token expired or expiring soon for school ${schoolId}, attempting refresh...`);
+
+        // Step 2: Load accounts from MSAL's own cache with proper error handling
+        const tokenCache = schoolPca.getTokenCache();
+        let allAccounts = [];
+        
+        try {
+            allAccounts = await tokenCache.getAllAccounts();
+        } catch (cacheErr) {
+            console.error(`[Calendar] Failed to load MSAL accounts for school ${schoolId}:`, cacheErr.message);
+            // Try to clear cache and reload
+            try {
+                await tokenCache.clear();
+                allAccounts = await tokenCache.getAllAccounts();
+                console.log(`[Calendar] Cleared and reloaded MSAL cache for school ${schoolId}`);
+            } catch (clearErr) {
+                console.error(`[Calendar] Failed to clear MSAL cache for school ${schoolId}:`, clearErr.message);
+            }
+        }
+
         if (allAccounts.length === 0) {
             console.warn(`[Calendar] No accounts found in MSAL cache for school ${schoolId}. This usually means config.msalCache is missing or invalid.`);
-        }
-
-        const cachedAccount = allAccounts.find(a => a.username === account?.username) || allAccounts[0] || account;
-
-        const silentRequest = {
-            account: cachedAccount,
-            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
-            forceRefresh: false,
-        };
-        const response = await schoolPca.acquireTokenSilent(silentRequest);
-
-        // If the token was refreshed, update the DB
-        if (response.accessToken && response.accessToken !== accessToken) {
-            accessToken = response.accessToken;
-            console.log(`[Calendar] Outlook tokens refreshed and persisted for school: ${schoolId}`);
-
-            await Integration.updateOne(
-                { _id: integration._id },
-                {
-                    $set: {
-                        'config.accessToken': accessToken,
-                        'config.account': response.account,
-                        'config.expiresOn': response.expiresOn,
-                    }
-                }
-            );
-
-            // Note: The MSAL cache plugin (afterCacheAccess) handles persisting the updated 
-            // msalCache string (which contains the new refresh token) automatically 
-            // because cacheHasChanged will be true after acquireTokenSilent.
-        }
-    } catch (error) {
-        // Bug 4 Fix: If truly unrecoverable (interaction required, tokens gone, or lifetime expired),
-        // mark the integration as disconnected so the school knows to reconnect — instead of
-        // silently returning the already-expired access token which will cause 401s downstream.
-        const isHardFailure =
-            error.name === 'InteractionRequiredAuthError' ||
-            error.message?.includes('no_tokens_found') ||
-            error.message?.includes('Lifetime validation failed') ||
-            error.message?.includes('invalid_grant') ||
-            error.message?.includes('invalid_token');
-
-        if (isHardFailure) {
-            console.warn(`[Calendar] Outlook token unrecoverable for school ${schoolId}. Marking disconnected. Error: ${error.message}`);
+            // Mark as disconnected - requires manual re-auth
             await Integration.updateOne(
                 { _id: integration._id },
                 { $set: { connected: false } }
             );
-            return null; // Caller will log "Outlook not authorized or token expired"
-        } else {
-            console.error(`[Calendar] MSAL acquireTokenSilent transient error for school ${schoolId}:`, error.message);
-            // Transient error — return existing token optimistically; it may still be valid
+            return null;
         }
+
+        // Step 3: Find matching account with multiple fallback strategies
+        let cachedAccount = allAccounts.find(a => a.username === account?.username);
+        if (!cachedAccount && allAccounts.length > 0) {
+            console.warn(`[Calendar] Account username mismatch, using first available account. Expected: ${account?.username}, Available: ${allAccounts.map(a => a.username).join(', ')}`);
+            cachedAccount = allAccounts[0];
+        }
+
+        // Step 4: Attempt silent token acquisition with comprehensive error handling
+        const silentRequest = {
+            account: cachedAccount,
+            scopes: ['user.read', 'calendars.readwrite', 'mail.send', 'offline_access'],
+            forceRefresh: true, // Force refresh to get fresh token
+        };
+
+        let response;
+        try {
+            response = await schoolPca.acquireTokenSilent(silentRequest);
+        } catch (acquireErr) {
+            console.error(`[Calendar] First acquireTokenSilent attempt failed for school ${schoolId}:`, {
+                name: acquireErr.name,
+                code: acquireErr.code,
+                message: acquireErr.message
+            });
+
+            // Try again without forceRefresh
+            try {
+                delete silentRequest.forceRefresh;
+                response = await schoolPca.acquireTokenSilent(silentRequest);
+                console.log(`[Calendar] Second acquireTokenSilent attempt succeeded for school ${schoolId}`);
+            } catch (secondErr) {
+                console.error(`[Calendar] Second acquireTokenSilent attempt failed for school ${schoolId}:`, secondErr.message);
+                throw secondErr;
+            }
+        }
+
+        // Step 5: Validate response and update database
+        if (!response || !response.accessToken) {
+            throw new Error('No access token received from MSAL');
+        }
+
+        // Step 6: Update database with new token and account info
+        const updateData = {
+            'config.accessToken': response.accessToken,
+            'config.account': response.account || cachedAccount,
+            'config.expiresOn': response.expiresOn,
+            'config.lastRefresh': new Date(),
+        };
+
+        await Integration.updateOne(
+            { _id: integration._id },
+            { $set: updateData }
+        );
+
+        console.log(`[Calendar] Outlook tokens successfully refreshed and persisted for school: ${schoolId}`);
+        console.log(`[Calendar] New token expires: ${response.expiresOn ? new Date(response.expiresOn).toISOString() : 'Unknown'}`);
+
+        // Step 7: Verify the cache plugin will persist the updated msalCache
+        // The afterCacheAccess plugin should handle this automatically if cacheHasChanged is true
+
+        return response.accessToken;
+
+    } catch (error) {
+        // Comprehensive error classification and handling
+        const errorMessage = error.message || error.toString();
+        const errorCode = error.name || error.code;
+        
+        console.error(`[Calendar] MSAL token refresh error for school ${schoolId}:`, {
+            name: error.name,
+            code: error.code,
+            message: error.message,
+            stack: error.stack
+        });
+        
+        // Classify error types for proper handling
+        const isTokenRevoked = 
+            errorMessage?.includes('invalid_grant') ||
+            errorMessage?.includes('invalid_token') ||
+            errorMessage?.includes('unauthorized_client') ||
+            errorCode === 'InvalidGrantError' ||
+            errorCode === 'InvalidClientError';
+
+        const isInteractionRequired = 
+            errorCode === 'InteractionRequiredAuthError' ||
+            errorMessage?.includes('interaction_required') ||
+            errorMessage?.includes('consent_required');
+
+        const isAccountNotFound = 
+            errorMessage?.includes('no_tokens_found') ||
+            errorMessage?.includes('account_not_found');
+
+        if (isTokenRevoked) {
+            console.warn(`[Calendar] Outlook token revoked for school ${schoolId}. Marking disconnected - requires manual re-auth.`);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { connected: false, 'config.lastError': errorMessage } }
+            );
+            return null;
+        }
+
+        if (isInteractionRequired || isAccountNotFound) {
+            console.warn(`[Calendar] Outlook requires re-authentication for school ${schoolId}. Marking disconnected.`);
+            await Integration.updateOne(
+                { _id: integration._id },
+                { $set: { connected: false, 'config.lastError': errorMessage } }
+            );
+            return null;
+        }
+
+        // For network or transient errors, return existing token optimistically
+        console.warn(`[Calendar] MSAL transient error for school ${schoolId}: ${errorMessage}. Returning existing token optimistically.`);
+        return accessToken;
     }
 
+    // Final fallback - return existing token if all else fails
     return accessToken;
 }
 
