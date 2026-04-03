@@ -707,6 +707,100 @@ router.get('/daily-insights', async (req, res) => {
     }
 });
 
+// GET /api/school/action-needed - All action-needed items (not just today)
+router.get('/action-needed', async (req, res) => {
+    try {
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const school = await School.findById(schoolId).select('aiNumber').lean();
+        const normalizePhone = (p) => (p || '').replace(/\D/g, '');
+        const schoolAiNumber = normalizePhone(school?.aiNumber || '');
+        const userToken = req.headers.authorization?.split(' ')[1] || '';
+        const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+
+        // Get calls from the last 30 days that need action
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+        const actionNeededWebhooks = await ElevenLabsWebhook.find({
+            type: 'post_call_transcription',
+            received_at: { $gte: thirtyDaysAgo },
+            tour_booking_detected: { $ne: true },
+            actionTaken: { $ne: true }, // Only show items not yet marked as action taken
+            $or: [
+                { schoolId: schoolObjectId },
+                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
+                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
+            ]
+        }).sort({ received_at: -1 }).lean();
+
+        const actionNeeded = actionNeededWebhooks.map(wh => ({
+            id: wh._id.toString(),
+            conversationId: wh.conversation_id,
+            callerName: wh.tour_booking_extracted?.name || 'Parent',
+            callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
+            summary: wh.summary || '',
+            timestamp: wh.metadata?.start_time_unix_secs
+                ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                : wh.received_at,
+            recordingUrl: wh.conversation_id
+                ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
+                : null,
+            duration: wh.metadata?.phone_call?.duration_seconds || 0,
+            questionsAsked: wh.questions_asked || []
+        }));
+
+        res.json({ actionNeeded });
+    } catch (err) {
+        console.error('Action needed error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/school/action-needed/:id/mark-action-taken - Mark an item as action taken
+router.post('/action-needed/:id/mark-action-taken', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { feedback } = req.body; // Optional feedback from the user
+        
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
+        // Find and update the webhook entry
+        const webhook = await ElevenLabsWebhook.findOneAndUpdate(
+            {
+                _id: id,
+                $or: [
+                    { schoolId: schoolObjectId },
+                    { 'metadata.phone_call.agent_number': { $regex: '^\\+?\\d+$' } },
+                    { 'metadata.phone_call.to_number': { $regex: '^\\+?\\d+$' } }
+                ]
+            },
+            {
+                actionTaken: true,
+                actionTakenAt: new Date(),
+                actionTakenFeedback: feedback || '',
+                actionTakenBy: req.user.id
+            },
+            { new: true }
+        );
+
+        if (!webhook) {
+            return res.status(404).json({ error: 'Action needed item not found' });
+        }
+
+        console.log(`[ACTION-TAKEN] Marked ${id} as action taken by user ${req.user.id}`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Item marked as action taken successfully',
+            itemId: id 
+        });
+    } catch (err) {
+        console.error('Mark action taken error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // POST /api/school/wordcloud/generate - Manually trigger word cloud generation
 router.post('/wordcloud/generate', async (req, res) => {
     try {
