@@ -827,11 +827,7 @@ async function updateWordCloudForSchool(schoolId) {
         const wordCloudWebhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
             received_at: { $gte: wordCloudStart, $lte: todayEnd },
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
+            schoolId: schoolObjectId
         })
             .select('transcript')
             .sort({ received_at: -1 })

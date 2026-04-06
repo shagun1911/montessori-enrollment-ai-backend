@@ -543,11 +543,7 @@ router.get('/daily-insights', async (req, res) => {
         const todayWebhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
             received_at: { $gte: todayStart, $lte: todayEnd },
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
+            schoolId: schoolObjectId
         }).sort({ received_at: -1 }).lean();
 
         // Use cached word cloud from School model
@@ -597,10 +593,7 @@ router.get('/daily-insights', async (req, res) => {
             const tourPhone = normalizePhone(tour.phone);
             const linkedWebhook = await ElevenLabsWebhook.findOne({
                 type: 'post_call_transcription',
-                $or: [
-                    { schoolId: schoolObjectId },
-                    { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                ],
+                schoolId: schoolObjectId,
                 $and: [
                     tourPhone ? { 'metadata.phone_call.from_number': { $regex: tourPhone } } : { _id: { $exists: true } }
                 ]
@@ -726,11 +719,7 @@ router.get('/action-needed', async (req, res) => {
             received_at: { $gte: thirtyDaysAgo },
             tour_booking_detected: { $ne: true },
             actionTaken: { $ne: true }, // Only show items not yet marked as action taken
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
+            schoolId: schoolObjectId
         }).sort({ received_at: -1 }).lean();
 
         const actionNeeded = actionNeededWebhooks.map(wh => ({
@@ -769,11 +758,7 @@ router.post('/action-needed/:id/mark-action-taken', async (req, res) => {
         const webhook = await ElevenLabsWebhook.findOneAndUpdate(
             {
                 _id: id,
-                $or: [
-                    { schoolId: schoolObjectId },
-                    { 'metadata.phone_call.agent_number': { $regex: '^\\+?\\d+$' } },
-                    { 'metadata.phone_call.to_number': { $regex: '^\\+?\\d+$' } }
-                ]
+                schoolId: schoolObjectId
             },
             {
                 actionTaken: true,
@@ -817,11 +802,7 @@ router.post('/wordcloud/generate', async (req, res) => {
         const wordCloudWebhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
             received_at: { $gte: wordCloudStart, $lte: todayEnd },
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
+            schoolId: schoolObjectId
         })
             .select('transcript')
             .sort({ received_at: -1 })
@@ -923,11 +904,7 @@ router.get('/call-logs', async (req, res) => {
         const webhooks = await ElevenLabsWebhook.find({
             type: 'post_call_transcription',
             ai_processed: true,
-            $or: [
-                { schoolId: schoolObjectId },
-                { 'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' } },
-                { 'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' } }
-            ]
+            schoolId: schoolObjectId
         }).sort({ received_at: -1 }).limit(50).lean();
 
         const webhookSessions = webhooks.map(wh => {

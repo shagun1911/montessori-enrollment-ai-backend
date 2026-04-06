@@ -48,6 +48,16 @@ async function generateTranscriptSummary(transcriptArray) {
             return null;
         }
 
+        // Check if transcript is too short to extract meaningful insights
+        const wordCount = transcriptText.split(/\s+/).filter(word => word.length > 0).length;
+        const transcriptLength = transcriptText.length;
+        
+        // If transcript is very short, return minimal information without calling AI
+        if (transcriptLength < 50 || wordCount < 10) {
+            console.log(`[OpenAI] Transcript too short (${wordCount} words, ${transcriptLength} chars). Skipping insight generation.`);
+            return 'Call was too short to extract meaningful insights. No actionable information captured.';
+        }
+
         const prompt = `You are summarizing a real phone call transcript between a school enrollment AI agent and a caller (usually a parent or guardian). Your summary will be used by school staff to quickly understand what happened on the call.
 
 Rules:
@@ -109,6 +119,28 @@ async function extractTourBooking(transcriptArray) {
         if (!transcriptText || transcriptText.trim().length === 0) {
             console.warn('[OpenAI] Empty transcript, cannot extract tour booking');
             return null;
+        }
+
+        // Check if transcript is too short to extract meaningful booking info
+        const wordCount = transcriptText.split(/\s+/).filter(word => word.length > 0).length;
+        const transcriptLength = transcriptText.length;
+        
+        // If transcript is very short, no tour could have been booked
+        if (transcriptLength < 50 || wordCount < 10) {
+            console.log(`[OpenAI] Transcript too short (${wordCount} words, ${transcriptLength} chars). No tour booking possible.`);
+            return {
+                tour_booked: false,
+                name: null,
+                phone: null,
+                email: null,
+                childName: null,
+                childAge: null,
+                reason: null,
+                date: null,
+                time: null,
+                datetime: null,
+                notes: 'Call was too short to discuss or book a tour.'
+            };
         }
 
         const prompt = `You are analyzing a phone call transcript between a school enrollment AI agent and a parent. 
