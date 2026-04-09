@@ -550,7 +550,7 @@ router.get('/daily-insights', async (req, res) => {
         const wordCloud = school?.wordCloud || [];
 
         const needsAttention = todayWebhooks
-            .filter(wh => !wh.tour_booking_detected)
+            .filter(wh => !wh.tour_booking_detected && !wh.actionTaken)
             .map(wh => {
                 return {
                     id: wh._id.toString(),
@@ -566,6 +566,10 @@ router.get('/daily-insights', async (req, res) => {
                         : null,
                     duration: getCallDurationSeconds(wh),
                     questionsAsked: [], // Will be enriched or replaced by word cloud data
+                    actionTaken: wh.actionTaken || false,
+                    actionTakenAt: wh.actionTakenAt || null,
+                    actionTakenFeedback: wh.actionTakenFeedback || '',
+                    feedbackHistory: wh.feedbackHistory || undefined
                 };
             });
 
@@ -735,7 +739,10 @@ router.get('/action-needed', async (req, res) => {
                 ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
                 : null,
             duration: wh.metadata?.phone_call?.duration_seconds || 0,
-            questionsAsked: wh.questions_asked || []
+            questionsAsked: wh.questions_asked || [],
+            actionTakenFeedback: wh.actionTakenFeedback || undefined,
+            actionTakenAt: wh.actionTakenAt || undefined,
+            feedbackHistory: wh.feedbackHistory || undefined
         }));
 
         res.json({ actionNeeded });
@@ -761,10 +768,14 @@ router.post('/action-needed/:id/mark-action-taken', async (req, res) => {
                 schoolId: schoolObjectId
             },
             {
-                actionTaken: true,
-                actionTakenAt: new Date(),
                 actionTakenFeedback: feedback || '',
-                actionTakenBy: req.user.id
+                $push: {
+                    feedbackHistory: {
+                        feedback: feedback || '',
+                        timestamp: new Date().toISOString(),
+                        userId: req.user.id
+                    }
+                }
             },
             { new: true }
         );
@@ -773,8 +784,6 @@ router.post('/action-needed/:id/mark-action-taken', async (req, res) => {
             return res.status(404).json({ error: 'Action needed item not found' });
         }
 
-        console.log(`[ACTION-TAKEN] Marked ${id} as action taken by user ${req.user.id}`);
-        
         res.json({ 
             success: true, 
             message: 'Item marked as action taken successfully',
@@ -782,6 +791,75 @@ router.post('/action-needed/:id/mark-action-taken', async (req, res) => {
         });
     } catch (err) {
         console.error('Mark action taken error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// DELETE /api/school/action-needed/:id - Permanently delete a webhook from the database
+router.delete('/action-needed/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const schoolId = req.user.schoolId;
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const webhookObjectId = new mongoose.Types.ObjectId(id);
+
+        console.log(`[DELETE] Attempting to delete webhook: id=${id}, schoolId=${schoolId}`);
+        console.log(`[DELETE] webhookObjectId=${webhookObjectId}, schoolObjectId=${schoolObjectId}`);
+
+        // First, check if the webhook exists
+        const existingWebhook = await ElevenLabsWebhook.findOne({
+            _id: webhookObjectId,
+            schoolId: schoolObjectId
+        });
+
+        console.log(`[DELETE] Existing webhook found:`, existingWebhook ? 'YES' : 'NO');
+
+        if (!existingWebhook) {
+            // Try to find by string ID as fallback
+            const webhookByStringId = await ElevenLabsWebhook.findOne({
+                _id: id,
+                schoolId: schoolObjectId
+            });
+            console.log(`[DELETE] Webhook found by string ID:`, webhookByStringId ? 'YES' : 'NO');
+
+            if (webhookByStringId) {
+                // Delete using string ID
+                await ElevenLabsWebhook.deleteOne({ _id: id, schoolId: schoolObjectId });
+                console.log(`[DELETE] Deleted webhook using string ID: ${id}`);
+                return res.json({ 
+                    success: true, 
+                    message: 'Item permanently deleted',
+                    itemId: id 
+                });
+            }
+
+            // Try to find without schoolId constraint
+            const webhookWithoutSchool = await ElevenLabsWebhook.findOne({ _id: webhookObjectId });
+            console.log(`[DELETE] Webhook found without schoolId:`, webhookWithoutSchool ? 'YES' : 'NO', webhookWithoutSchool ? `schoolId=${webhookWithoutSchool.schoolId}` : '');
+
+            if (webhookWithoutSchool) {
+                console.log(`[DELETE] Webhook exists but schoolId mismatch. Requested: ${schoolId}, Actual: ${webhookWithoutSchool.schoolId}`);
+            }
+
+            console.log(`[DELETE] Webhook not found for id: ${id}, schoolId: ${schoolId}`);
+            return res.status(404).json({ error: 'Webhook not found' });
+        }
+
+        // Delete the webhook
+        const webhook = await ElevenLabsWebhook.findOneAndDelete({
+            _id: webhookObjectId,
+            schoolId: schoolObjectId
+        });
+
+        console.log(`[DELETE] Permanently deleted webhook ${id} from school ${schoolId}`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Item permanently deleted',
+            itemId: id 
+        });
+    } catch (err) {
+        console.error('Delete webhook error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

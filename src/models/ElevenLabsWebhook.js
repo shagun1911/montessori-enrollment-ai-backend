@@ -20,6 +20,15 @@ const elevenLabsWebhookSchema = new mongoose.Schema({
     tour_booking_extracted: { type: mongoose.Schema.Types.Mixed, default: null }, // full extracted booking info
     ai_processed: { type: Boolean, default: false }, // whether AI processing is complete
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true }, // link to the school
+    actionTaken: { type: Boolean, default: false }, // whether action has been taken
+    actionTakenAt: { type: Date, default: null }, // when action was taken
+    actionTakenFeedback: { type: String, default: '' }, // latest feedback
+    actionTakenBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // who took action
+    feedbackHistory: { type: [new mongoose.Schema({
+        feedback: { type: String, required: true },
+        timestamp: { type: Date, default: Date.now },
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    })], default: [] }, // history of all feedback entries
 }, { timestamps: true });
 
 // Index for faster lookups
