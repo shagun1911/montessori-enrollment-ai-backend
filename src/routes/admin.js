@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const School = require('../models/School');
 const User = require('../models/User');
-const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
 const Followup = require('../models/Followup');
 const FormQuestion = require('../models/FormQuestion');
@@ -27,15 +26,15 @@ router.get('/dashboard', async (req, res) => {
     try {
         const totalSchools = await School.countDocuments();
         const activeSchools = await School.countDocuments({ status: 'active' });
-        const totalCalls = await CallLog.countDocuments();
-        const inquiryCalls = await CallLog.countDocuments({ callType: 'inquiry' });
+        const totalCalls = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription' });
+        const callsWithSchoolId = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', schoolId: { $exists: true, $ne: null } });
         const totalFollowups = await Followup.countDocuments();
         const sentFollowups = await Followup.countDocuments({ status: 'sent' });
         const totalReferrals = await Referral.countDocuments();
 
         // Recent calls with school name
-        const recentCalls = await CallLog.find()
-            .sort({ createdAt: -1 })
+        const recentCalls = await ElevenLabsWebhook.find({ type: 'post_call_transcription' })
+            .sort({ received_at: -1 })
             .limit(5)
             .populate('schoolId', 'name')
             .lean();
@@ -43,11 +42,11 @@ router.get('/dashboard', async (req, res) => {
         const formattedCalls = recentCalls.map(c => ({
             id: c._id,
             school_name: c.schoolId?.name || 'Unknown',
-            caller_name: c.callerName,
-            caller_phone: c.callerPhone,
-            call_type: c.callType,
-            duration: c.duration,
-            timestamp: c.createdAt,
+            caller_name: c.tour_booking_extracted?.name || 'Parent',
+            caller_phone: c.metadata?.phone_call?.from_number || 'Unknown',
+            call_type: c.tour_booking_detected ? 'Tour Booking' : 'Inquiry',
+            duration: c.metadata?.phone_call?.duration_seconds || 0,
+            timestamp: c.received_at,
         }));
 
         // Recent followups with school name
@@ -70,7 +69,6 @@ router.get('/dashboard', async (req, res) => {
             metrics: [
                 { label: 'Total Schools', value: totalSchools },
                 { label: 'Total Calls', value: totalCalls },
-                { label: 'Inquiry Calls', value: inquiryCalls },
             ],
             recentCalls: formattedCalls,
             recentFollowups: formattedFollowups,
@@ -78,7 +76,7 @@ router.get('/dashboard', async (req, res) => {
                 totalSchools,
                 activeSchools,
                 totalCalls,
-                inquiryCalls,
+                callsWithSchoolId,
                 totalFollowups,
                 sentFollowups,
                 totalReferrals,
@@ -103,8 +101,12 @@ router.get('/schools', async (req, res) => {
         const TourBooking = require('../models/TourBooking');
         const formatted = await Promise.all(
             schools.map(async (s) => {
-                const calls = await CallLog.countDocuments({ schoolId: s._id });
-                const inquiryCalls = await CallLog.countDocuments({ schoolId: s._id, callType: 'inquiry' });
+                let calls = 0;
+                try {
+                    calls = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription' });
+                } catch (err) {
+                    console.error('Error counting calls for school:', s._id, err);
+                }
                 const followupsSent = await Followup.countDocuments({ schoolId: s._id, status: 'sent' });
                 const tours = await TourBooking.countDocuments({ schoolId: s._id });
 
@@ -118,7 +120,6 @@ router.get('/schools', async (req, res) => {
                     status: s.status,
                     language: s.language,
                     calls,
-                    inquiryCalls,
                     tours,
                     followupsSent,
                     referralCode: schoolIdToCode[s._id.toString()] || null,
@@ -479,7 +480,7 @@ router.delete('/schools/:id', async (req, res) => {
         const objectId = new mongoose.Types.ObjectId(id);
         await Promise.all([
             User.deleteMany({ schoolId: objectId }),
-            CallLog.deleteMany({ schoolId: objectId }),
+            ElevenLabsWebhook.deleteMany({ schoolId: objectId }),
             Integration.deleteMany({ schoolId: objectId }),
             Followup.deleteMany({ schoolId: objectId }),
             FormQuestion.deleteMany({ schoolId: objectId }),
@@ -525,27 +526,28 @@ router.delete('/schools/:id', async (req, res) => {
 router.get('/analytics', async (req, res) => {
     try {
         // Calls by month using aggregation
-        const callsByMonth = await CallLog.aggregate([
+        const callsByMonth = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription' } },
             {
                 $group: {
-                    _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
+                    _id: { $dateToString: { format: '%Y-%m', date: '$received_at' } },
                     total: { $sum: 1 },
-                    inquiries: { $sum: { $cond: [{ $eq: ['$callType', 'inquiry'] }, 1, 0] } },
-                    general: { $sum: { $cond: [{ $eq: ['$callType', 'general'] }, 1, 0] } },
-                    routed: { $sum: { $cond: [{ $eq: ['$callType', 'routing'] }, 1, 0] } },
+                    tourBookings: { $sum: { $cond: [{ $eq: ['$tour_booking_detected', true] }, 1, 0] } },
+                    inquiries: { $sum: { $cond: [{ $eq: ['$tour_booking_detected', false] }, 1, 0] } },
                 },
             },
             { $sort: { _id: 1 } },
-            { $project: { month: '$_id', total: 1, inquiries: 1, general: 1, routed: 1, _id: 0 } },
+            { $project: { month: '$_id', total: 1, tourBookings: 1, inquiries: 1, _id: 0 } },
         ]);
 
         // Calls per school
-        const callsBySchool = await CallLog.aggregate([
+        const callsBySchool = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription' } },
             {
                 $group: {
                     _id: '$schoolId',
                     calls: { $sum: 1 },
-                    inquiries: { $sum: { $cond: [{ $eq: ['$callType', 'inquiry'] }, 1, 0] } },
+                    tourBookings: { $sum: { $cond: [{ $eq: ['$tour_booking_detected', true] }, 1, 0] } },
                 },
             },
             {
@@ -557,7 +559,7 @@ router.get('/analytics', async (req, res) => {
                 },
             },
             { $unwind: '$school' },
-            { $project: { name: '$school.name', calls: 1, inquiries: 1, _id: 0 } },
+            { $project: { name: '$school.name', calls: 1, tourBookings: 1, _id: 0 } },
             { $sort: { calls: -1 } },
         ]);
 
@@ -576,14 +578,14 @@ router.get('/analytics', async (req, res) => {
         const schools = await School.find().lean();
         const topSchools = await Promise.all(
             schools.map(async (s) => {
-                const totalCalls = await CallLog.countDocuments({ schoolId: s._id });
-                const inquiryCalls = await CallLog.countDocuments({ schoolId: s._id, callType: 'inquiry' });
+                const totalCalls = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription' });
+                const tourBookings = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription', tour_booking_detected: true });
                 const followupsSent = await Followup.countDocuments({ schoolId: s._id, status: 'sent' });
                 return {
                     name: s.name,
                     status: s.status,
                     total_calls: totalCalls,
-                    inquiry_calls: inquiryCalls,
+                    tour_bookings: tourBookings,
                     followups_sent: followupsSent,
                 };
             })
