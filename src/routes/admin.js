@@ -24,20 +24,40 @@ router.use(authMiddleware, adminOnly);
 // GET /api/admin/dashboard - Dashboard metrics
 router.get('/dashboard', async (req, res) => {
     try {
+        const { month, startDate, endDate } = req.query;
+        
+        // Build date filter
+        let dateFilter = {};
+        if (month) {
+            const [year, monthNum] = month.split('-');
+            dateFilter = {
+                received_at: {
+                    $gte: new Date(year, monthNum - 1, 1),
+                    $lt: new Date(year, monthNum, 1)
+                }
+            };
+        } else if (startDate && endDate) {
+            dateFilter = {
+                received_at: {
+                    $gte: new Date(startDate),
+                    $lte: new Date(endDate)
+                }
+            };
+        }
         const totalSchools = await School.countDocuments();
         const activeSchools = await School.countDocuments({ status: 'active' });
-        const totalCalls = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription' });
-        const callsWithSchoolId = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', schoolId: { $exists: true, $ne: null } });
-        const totalFollowups = await Followup.countDocuments();
-        const sentFollowups = await Followup.countDocuments({ status: 'sent' });
-        const totalReferrals = await Referral.countDocuments();
+        const totalCalls = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', ...dateFilter });
+        const callsWithSchoolId = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', schoolId: { $exists: true, $ne: null }, ...dateFilter });
+        const totalFollowups = await Followup.countDocuments({ ...dateFilter });
+        const sentFollowups = await Followup.countDocuments({ status: 'sent', ...dateFilter });
+        const totalReferrals = await Referral.countDocuments({ ...dateFilter });
         
         // New metrics
-        const totalToursBooked = await TourBooking.countDocuments();
+        const totalToursBooked = await TourBooking.countDocuments({ ...dateFilter });
         
         // Calculate total call minutes
         const callMinutesAggregation = await ElevenLabsWebhook.aggregate([
-            { $match: { type: 'post_call_transcription' } },
+            { $match: { type: 'post_call_transcription', ...dateFilter } },
             { 
                 $group: { 
                     _id: null, 
@@ -56,7 +76,7 @@ router.get('/dashboard', async (req, res) => {
         
         // Get top schools by call minutes
         const topSchoolsByMinutes = await ElevenLabsWebhook.aggregate([
-            { $match: { type: 'post_call_transcription', schoolId: { $exists: true, $ne: null } } },
+            { $match: { type: 'post_call_transcription', schoolId: { $exists: true, $ne: null }, ...dateFilter } },
             {
                 $group: {
                     _id: '$schoolId',
@@ -92,15 +112,23 @@ router.get('/dashboard', async (req, res) => {
             }
         ]);
         
-        // Get call minutes over time for line graph (last 30 days)
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        // Get call minutes over time for line graph (last 30 days or filtered range)
+        let dateRangeFilter = { ...dateFilter };
+        
+        // If no custom date filter, default to last 30 days
+        if (!month && !startDate && !endDate) {
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            dateRangeFilter = {
+                received_at: { $gte: thirtyDaysAgo }
+            };
+        }
         
         const callMinutesOverTime = await ElevenLabsWebhook.aggregate([
             { 
                 $match: { 
                     type: 'post_call_transcription',
-                    received_at: { $gte: thirtyDaysAgo }
+                    ...dateRangeFilter
                 } 
             },
             {
@@ -121,7 +149,7 @@ router.get('/dashboard', async (req, res) => {
         ]);
 
         // Recent calls with school name
-        const recentCalls = await ElevenLabsWebhook.find({ type: 'post_call_transcription' })
+        const recentCalls = await ElevenLabsWebhook.find({ type: 'post_call_transcription', ...dateRangeFilter })
             .sort({ received_at: -1 })
             .limit(5)
             .populate('schoolId', 'name')
@@ -138,7 +166,7 @@ router.get('/dashboard', async (req, res) => {
         }));
 
         // Recent followups with school name
-        const recentFollowups = await Followup.find()
+        const recentFollowups = await Followup.find({ ...dateRangeFilter })
             .sort({ createdAt: -1 })
             .limit(5)
             .populate('schoolId', 'name')
@@ -635,9 +663,33 @@ router.delete('/schools/:id', async (req, res) => {
 // GET /api/admin/analytics - Analytics data
 router.get('/analytics', async (req, res) => {
     try {
+        const { month, startDate, endDate } = req.query;
+        
+        // Build date filter
+        let dateFilter = {};
+        if (month) {
+            const [year, monthNum] = month.split('-');
+            dateFilter = {
+                received_at: {
+                    $gte: new Date(year, monthNum - 1, 1),
+                    $lt: new Date(year, monthNum, 1)
+                }
+            };
+        } else if (startDate && endDate) {
+            dateFilter = {
+                received_at: {
+                    $gte: new Date(startDate),
+                    $lte: new Date(endDate)
+                }
+            };
+        }
+        
+        // Build base match condition
+        let baseMatch = { type: 'post_call_transcription', ...(Object.keys(dateFilter).length > 0 ? dateFilter : {}) };
+        
         // Calls by month using aggregation
         const callsByMonth = await ElevenLabsWebhook.aggregate([
-            { $match: { type: 'post_call_transcription' } },
+            { $match: baseMatch },
             {
                 $group: {
                     _id: { $dateToString: { format: '%Y-%m', date: '$received_at' } },
@@ -651,8 +703,9 @@ router.get('/analytics', async (req, res) => {
         ]);
 
         // Calls per school
+        const schoolMatch = Object.keys(dateFilter).length > 0 ? dateFilter : {};
         const callsBySchool = await ElevenLabsWebhook.aggregate([
-            { $match: { type: 'post_call_transcription' } },
+            { $match: { type: 'post_call_transcription', ...schoolMatch } },
             {
                 $group: {
                     _id: '$schoolId',
@@ -674,7 +727,9 @@ router.get('/analytics', async (req, res) => {
         ]);
 
         // Followup stats
+        const followupMatch = Object.keys(dateFilter).length > 0 ? dateFilter : {};
         const followupStats = await Followup.aggregate([
+            { $match: followupMatch },
             {
                 $group: {
                     _id: { type: '$type', status: '$status' },
@@ -688,9 +743,9 @@ router.get('/analytics', async (req, res) => {
         const schools = await School.find().lean();
         const topSchools = await Promise.all(
             schools.map(async (s) => {
-                const totalCalls = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription' });
-                const tourBookings = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription', tour_booking_detected: true });
-                const followupsSent = await Followup.countDocuments({ schoolId: s._id, status: 'sent' });
+                const totalCalls = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription', ...dateFilter });
+                const tourBookings = await ElevenLabsWebhook.countDocuments({ schoolId: s._id, type: 'post_call_transcription', tour_booking_detected: true, ...dateFilter });
+                const followupsSent = await Followup.countDocuments({ schoolId: s._id, status: 'sent', ...dateFilter });
                 return {
                     name: s.name,
                     status: s.status,
