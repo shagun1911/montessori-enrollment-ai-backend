@@ -738,7 +738,7 @@ router.get('/action-needed', async (req, res) => {
             recordingUrl: wh.conversation_id
                 ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
                 : null,
-            duration: wh.metadata?.phone_call?.duration_seconds || 0,
+            duration: getCallDurationSeconds(wh),
             questionsAsked: wh.questions_asked || [],
             actionTakenFeedback: wh.actionTakenFeedback || undefined,
             actionTakenAt: wh.actionTakenAt || undefined,
