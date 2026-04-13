@@ -10,6 +10,11 @@ const Referral = require('../models/Referral');
 const TourBooking = require('../models/TourBooking');
 const { createCalendarEvent, getFreeSlots, isSlotAvailable } = require('../services/calendarService');
 const { 
+    createSchoolAgent,
+    registerTool,
+    patchAgentPrompt,
+    formatQAPairsForKB,
+    ingestKnowledgeBaseDocument,
     NORA_SYSTEM_PROMPT_TEMPLATE, 
     DEFAULT_FIRST_MESSAGE_TEMPLATE 
 } = require('../utils/elevenlabs');
@@ -268,10 +273,45 @@ router.post('/refer/:code/register', async (req, res) => {
             aiNumber: '',
             routingNumber: '',
             escalationNumber: '',
+            elevenlabsAgentId: process.env.DEFAULT_ELEVENLABS_AGENT_ID || '',
             status: 'active',
             systemPrompt: defaultSystemPrompt,
             script: defaultFirstMessage
         });
+
+        // Generate Knowledge Base for the school (if any qaPairs exist)
+        let knowledgeBaseId = null;
+        if (school.qaPairs && school.qaPairs.length > 0) {
+            const kbText = formatQAPairsForKB(school.qaPairs);
+            if (kbText) {
+                knowledgeBaseId = await ingestKnowledgeBaseDocument(kbText, schoolName.trim());
+                if (knowledgeBaseId) {
+                    school.knowledgeBaseDocumentId = knowledgeBaseId;
+                    await school.save();
+                }
+            }
+        }
+
+        // Create ElevenLabs Agent for the school
+        const agentId = await createSchoolAgent(schoolName.trim(), school.knowledgeBaseDocumentId);
+        if (agentId) {
+            school.elevenlabsAgentId = agentId;
+
+            // Register booked-slots tool
+            const toolId = await registerTool(school._id.toString(), agentId);
+            if (toolId) {
+                const globalTimeToolId = "tool_1801kmyr9pdpemts5qr0f1xys3yy";
+                // Link tools to agent (both the school-specific and global time tool)
+                await patchAgentPrompt(agentId, {
+                    tool_ids: [toolId, globalTimeToolId],
+                    post_call_webhook_url: "https://montessori-enrollment-ai-backend.onrender.com/api/v1/webhook/elevenlabs",
+                    voice_id: "jqcCZkN6Knx8BJ5TBdYR",
+                });
+                console.log(`[Referral Register] Tools linked to Agent ${agentId}:`, [toolId, globalTimeToolId]);
+            }
+
+            await school.save();
+        }
 
         const passwordHash = bcrypt.hashSync(password, 10);
         await User.create({
@@ -297,6 +337,7 @@ router.post('/refer/:code/register', async (req, res) => {
             newSchoolName: schoolName.trim(),
             referralCode: code,
             status: 'converted',
+            date: new Date(),
         });
 
         res.status(201).json({
