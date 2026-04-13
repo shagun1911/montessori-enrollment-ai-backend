@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { getComprehensivePrompt } = require('../utils/comprehensivePrompt');
 
 /**
  * Format transcript array into readable text
@@ -32,19 +33,19 @@ function formatTranscript(transcriptArray) {
 }
 
 /**
- * Generate a summary of the call transcript using OpenAI
+ * Process transcript with comprehensive prompt to extract all information
  */
-async function generateTranscriptSummary(transcriptArray) {
+async function processTranscriptComprehensive(transcriptArray) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-        console.warn('[OpenAI] OPENAI_API_KEY not configured, skipping summary generation');
+        console.warn('[OpenAI] OPENAI_API_KEY not configured, skipping comprehensive processing');
         return null;
     }
 
     try {
         const transcriptText = formatTranscript(transcriptArray);
         if (!transcriptText || transcriptText.trim().length === 0) {
-            console.warn('[OpenAI] Empty transcript, cannot generate summary');
+            console.warn('[OpenAI] Empty transcript, cannot process');
             return null;
         }
 
@@ -54,120 +55,47 @@ async function generateTranscriptSummary(transcriptArray) {
         
         // If transcript is very short, return minimal information without calling AI
         if (transcriptLength < 50 || wordCount < 10) {
-            console.log(`[OpenAI] Transcript too short (${wordCount} words, ${transcriptLength} chars). Skipping insight generation.`);
-            return 'Call was too short to extract meaningful insights. No actionable information captured.';
-        }
-
-        const prompt = `You are summarizing a real phone call transcript between a school enrollment AI agent and a caller (usually a parent or guardian). Your summary will be used by school staff to quickly understand what happened on the call.
-
-Rules:
-- Base your summary ONLY on what is explicitly stated or clearly implied in the transcript. Do not invent names, dates, or facts.
-- Identify the caller's main reason for calling and any specific requests (tour, info, enrollment, callback).
-- Note concrete details mentioned: caller/child name, child age or grade, program of interest, preferred times, or contact details.
-- Note what the agent offered or agreed to: information given, tour scheduled, follow-up promised, etc.
-- If the transcript is short, unclear, or mostly greetings, say so briefly instead of guessing.
-- Write in past tense, 3–5 clear sentences. Use neutral, professional language.
-
-Transcript:
-${transcriptText}
-
-Summary:`;
-
-        const response = await axios.post(
-            'https://api.openai.com/v1/chat/completions',
-            {
-                model: 'gpt-4o-mini',
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
-                max_tokens: 350,
-                temperature: 0.3
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        const summary = response.data?.choices?.[0]?.message?.content?.trim();
-        console.log('[OpenAI] Summary generated successfully');
-        return summary || null;
-
-    } catch (err) {
-        console.error('[OpenAI] Error generating summary:', err.response?.data || err.message);
-        return null;
-    }
-}
-
-/**
- * Extract tour booking information from transcript using OpenAI
- */
-async function extractTourBooking(transcriptArray) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        console.warn('[OpenAI] OPENAI_API_KEY not configured, skipping tour booking extraction');
-        return null;
-    }
-
-    try {
-        const transcriptText = formatTranscript(transcriptArray);
-        if (!transcriptText || transcriptText.trim().length === 0) {
-            console.warn('[OpenAI] Empty transcript, cannot extract tour booking');
-            return null;
-        }
-
-        // Check if transcript is too short to extract meaningful booking info
-        const wordCount = transcriptText.split(/\s+/).filter(word => word.length > 0).length;
-        const transcriptLength = transcriptText.length;
-        
-        // If transcript is very short, no tour could have been booked
-        if (transcriptLength < 50 || wordCount < 10) {
-            console.log(`[OpenAI] Transcript too short (${wordCount} words, ${transcriptLength} chars). No tour booking possible.`);
+            console.log(`[OpenAI] Transcript too short (${wordCount} words, ${transcriptLength} chars). Returning minimal response.`);
             return {
+                call_state: "no_interaction",
+                parent_name: null,
+                parent_phone: null,
+                parent_email: null,
+                child_name: null,
+                child_age: null,
                 tour_booked: false,
-                name: null,
-                phone: null,
-                email: null,
-                childName: null,
-                childAge: null,
-                reason: null,
-                date: null,
-                time: null,
-                datetime: null,
-                notes: 'Call was too short to discuss or book a tour.'
+                tour_date: null,
+                tour_time: null,
+                tour_datetime_iso: null,
+                questions_asked: [],
+                topics_of_interest: [],
+                enrollment_urgency: "unknown",
+                enrollment_target_date: null,
+                language_spoken: "English",
+                summary: "No meaningful interaction. The call was interrupted or the caller did not engage.",
+                email: {
+                    subject: "No Interaction - Call Interrupted",
+                    body: "No meaningful interaction occurred during this call. The call was interrupted or the caller did not engage.\n\n- Nora, Kids R Kids Virtual Assistant"
+                },
+                one_pager: {
+                    header: {
+                        parent_name: "Not provided",
+                        phone: "Not provided",
+                        email: "Not provided",
+                        children: []
+                    },
+                    tour_info: {
+                        scheduled: false,
+                        date_display: "Not scheduled",
+                        attention_flag: "No interaction - call interrupted"
+                    },
+                    what_they_asked_about: [],
+                    tour_talking_points: []
+                }
             };
         }
 
-        const prompt = `You are analyzing a phone call transcript between a school enrollment AI agent and a parent. 
-
-Determine if a school tour was booked during this call. If yes, extract the date and time information.
-
-Respond ONLY with a JSON object in this exact format:
-{
-  "tour_booked": true or false,
-  "parent_name": "name of the parent or null",
-  "parent_phone": "phone number or null",
-  "parent_email": "email address or null",
-  "child_name": "name of the child or null",
-  "child_age": "age or grade of the child or null",
-  "reason": "reason for inquiry (e.g. looking for preschool)",
-  "date": "YYYY-MM-DD" or null,
-  "time": "HH:MM" or null,
-  "datetime": "ISO 8601 datetime string" or null,
-  "notes": "any additional context about the booking or inquiry"
-}
-
-If no tour was booked, set "tour_booked" to false and all other fields to null.
-
-Transcript:
-${transcriptText}
-
-JSON Response:`;
+        const prompt = getComprehensivePrompt(transcriptText);
 
         const response = await axios.post(
             'https://api.openai.com/v1/chat/completions',
@@ -179,8 +107,8 @@ JSON Response:`;
                         content: prompt
                     }
                 ],
-                max_tokens: 300,
-                temperature: 0.3,
+                max_tokens: 2000,
+                temperature: 0.1,
                 response_format: { type: 'json_object' }
             },
             {
@@ -193,83 +121,110 @@ JSON Response:`;
 
         const content = response.data?.choices?.[0]?.message?.content?.trim();
         if (!content) {
+            console.warn('[OpenAI] No content returned from comprehensive processing');
             return null;
         }
 
         // Parse JSON response
-        const bookingInfo = JSON.parse(content);
-        console.log('[OpenAI] Tour booking extraction result:', bookingInfo);
-
-        // Keep raw datetime string so webhook can interpret it in school's timezone (e.g. "4 PM" as 16:00 school local, not UTC)
-        const datetimeRaw = bookingInfo.tour_booked && bookingInfo.datetime ? String(bookingInfo.datetime).trim() : null;
-        const datetimeValid = datetimeRaw && !isNaN(new Date(datetimeRaw).getTime());
-
-        return {
-            tour_booked: bookingInfo.tour_booked === true,
-            name: bookingInfo.parent_name || null,
-            phone: bookingInfo.parent_phone || null,
-            email: bookingInfo.parent_email || null,
-            childName: bookingInfo.child_name || null,
-            childAge: bookingInfo.child_age || null,
-            reason: bookingInfo.reason || null,
-            date: bookingInfo.date || null,
-            time: bookingInfo.time || null,
-            datetime: datetimeValid ? datetimeRaw : null,
-            notes: bookingInfo.notes || null,
-            raw_response: bookingInfo
-        };
+        const result = JSON.parse(content);
+        console.log('[OpenAI] Comprehensive processing completed successfully');
+        return result;
 
     } catch (err) {
-        console.error('[OpenAI] Error extracting tour booking:', err.response?.data || err.message);
-        if (err.response?.data) {
-            console.error('[OpenAI] Full error response:', JSON.stringify(err.response.data, null, 2));
-        }
+        console.error('[OpenAI] Error in comprehensive processing:', err.response?.data || err.message);
         return null;
     }
 }
 
 /**
- * Process transcript with both summary and tour booking extraction
+ * Extract tour booking information from comprehensive result (legacy compatibility)
+ */
+function extractTourBookingFromComprehensive(comprehensiveResult) {
+    if (!comprehensiveResult) {
+        return null;
+    }
+
+    return {
+        tour_booked: comprehensiveResult.tour_booked || false,
+        name: comprehensiveResult.parent_name || null,
+        phone: comprehensiveResult.parent_phone || null,
+        email: comprehensiveResult.parent_email || null,
+        childName: comprehensiveResult.child_name ? (Array.isArray(comprehensiveResult.child_name) ? comprehensiveResult.child_name[0] : comprehensiveResult.child_name) : null,
+        childAge: comprehensiveResult.child_age ? (Array.isArray(comprehensiveResult.child_age) ? comprehensiveResult.child_age[0] : comprehensiveResult.child_age) : null,
+        reason: comprehensiveResult.topics_of_interest ? comprehensiveResult.topics_of_interest.join(', ') : null,
+        date: comprehensiveResult.tour_date || null,
+        time: comprehensiveResult.tour_time || null,
+        datetime: comprehensiveResult.tour_datetime_iso || null,
+        notes: comprehensiveResult.summary || null,
+        raw_response: comprehensiveResult
+    };
+}
+
+/**
+ * Extract summary from comprehensive result (legacy compatibility)
+ */
+function extractSummaryFromComprehensive(comprehensiveResult) {
+    return comprehensiveResult?.summary || null;
+}
+
+/**
+ * Process transcript with comprehensive prompt (main function)
  */
 async function processTranscript(transcriptArray) {
     try {
-        console.log('[OpenAI] Starting transcript processing...');
+        console.log('[OpenAI] Starting comprehensive transcript processing...');
         
-        const [summary, tourBooking] = await Promise.all([
-            generateTranscriptSummary(transcriptArray),
-            extractTourBooking(transcriptArray)
-        ]);
+        const comprehensiveResult = await processTranscriptComprehensive(transcriptArray);
+        
+        if (!comprehensiveResult) {
+            console.warn('[OpenAI] Comprehensive processing failed, returning empty result');
+            return {
+                summary: '',
+                tour_booking_detected: false,
+                tour_booking_date: null,
+                tour_booking_extracted: null,
+                comprehensive_result: null
+            };
+        }
+
+        // Extract legacy format for backward compatibility
+        const summary = extractSummaryFromComprehensive(comprehensiveResult);
+        const tourBooking = extractTourBookingFromComprehensive(comprehensiveResult);
 
         const result = {
             summary: summary || '',
             tour_booking_detected: tourBooking?.tour_booked || false,
             tour_booking_date: tourBooking?.datetime || null,
-            tour_booking_extracted: tourBooking || null
+            tour_booking_extracted: tourBooking || null,
+            comprehensive_result: comprehensiveResult
         };
 
-        console.log('[OpenAI] Transcript processing complete:', {
+        console.log('[OpenAI] Comprehensive transcript processing complete:', {
             has_summary: !!result.summary,
             tour_detected: result.tour_booking_detected,
-            tour_date: result.tour_booking_date
+            tour_date: result.tour_booking_date,
+            call_state: comprehensiveResult.call_state
         });
 
         return result;
 
     } catch (err) {
-        console.error('[OpenAI] Error processing transcript:', err);
+        console.error('[OpenAI] Error in comprehensive transcript processing:', err);
         return {
             summary: '',
             tour_booking_detected: false,
             tour_booking_date: null,
-            tour_booking_extracted: null
+            tour_booking_extracted: null,
+            comprehensive_result: null
         };
     }
 }
 
 module.exports = {
-    generateTranscriptSummary,
-    extractTourBooking,
+    generateTranscriptSummary: extractSummaryFromComprehensive, // Legacy compatibility
+    extractTourBooking: extractTourBookingFromComprehensive, // Legacy compatibility
     processTranscript,
+    processTranscriptComprehensive,
     formatTranscript
 };
 

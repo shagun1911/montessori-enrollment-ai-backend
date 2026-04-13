@@ -88,6 +88,23 @@ router.get('/dashboard', async (req, res) => {
     }
 });
 
+// GET /api/admin/webhook/:id - Get specific webhook details
+router.get('/webhook/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const webhook = await ElevenLabsWebhook.findById(id).lean();
+        
+        if (!webhook) {
+            return res.status(404).json({ error: 'Webhook not found' });
+        }
+        
+        res.json(webhook);
+    } catch (err) {
+        console.error('Get webhook error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // GET /api/admin/schools - List all schools
 router.get('/schools', async (req, res) => {
     try {
