@@ -13,6 +13,7 @@ const { createCalendarEvent, isSlotAvailable } = require('../services/calendarSe
 const { sendEmail } = require('../services/mailService');
 const { generateICS } = require('../utils/ics');
 const { parseLocalDateTimeToUTC } = require('../utils/timezone');
+const { deductCallMinutes } = require('../services/billingService');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'childcare-enrollment-ai-secret-key-2024';
 
@@ -139,6 +140,12 @@ async function processWebhookAsync(payload) {
         savedWebhook.processed = true;
         await savedWebhook.save();
         console.log('[Webhook] Webhook marked as processed');
+
+        if (type === 'post_call_transcription' && schoolId) {
+            deductCallMinutes(savedWebhook).catch((err) => {
+                console.error('[Webhook] Minute deduction error:', err);
+            });
+        }
 
         // Process transcript with OpenAI if it's a transcription webhook
         if (type === 'post_call_transcription' && Array.isArray(data.transcript) && data.transcript.length > 0) {

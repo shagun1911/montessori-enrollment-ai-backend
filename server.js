@@ -13,6 +13,8 @@ const integrationRoutes = require('./src/routes/integrations');
 const translateRoutes = require('./src/routes/translate');
 const publicRoutes = require('./src/routes/public');
 const webhookRoutes = require('./src/routes/webhook');
+const billingRoutes = require('./src/routes/billing');
+const paypalWebhookRoutes = require('./src/routes/paypalWebhook');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -26,6 +28,7 @@ app.use(cors({
     credentials: true,
 }));
 app.use(compression());
+app.use('/api/v1/webhook/paypal', express.raw({ type: 'application/json' }), paypalWebhookRoutes);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -38,6 +41,7 @@ app.use('/api/integrations', integrationRoutes.router);
 app.use('/api', translateRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/v1/webhook', webhookRoutes);
+app.use('/api/billing', billingRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -13,6 +13,8 @@ const TourBooking = require('../models/TourBooking');
 const PhoneNumber = require('../models/PhoneNumber');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const AiNumberRequest = require('../models/AiNumberRequest');
+const BillingTransaction = require('../models/BillingTransaction');
+const MinuteLedger = require('../models/MinuteLedger');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 const { importSipTrunk, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
 
@@ -262,6 +264,11 @@ router.get('/schools', async (req, res) => {
                     followupsSent,
                     referralCode: schoolIdToCode[s._id.toString()] || null,
                     createdAt: s.createdAt,
+                    foundingPartner: Boolean(s.foundingPartner),
+                    subscriptionStatus: s.subscriptionStatus || 'none',
+                    subscriptionPlanKey: s.subscriptionPlanKey || '',
+                    minuteBalance: typeof s.minuteBalance === 'number' ? s.minuteBalance : null,
+                    billingMode: s.billingMode || 'none',
                 };
             })
         );
@@ -377,11 +384,138 @@ router.post('/schools', async (req, res) => {
     }
 });
 
+// GET /api/admin/billing/summary — revenue, MRR-style subscription payments, top-ups, by school
+router.get('/billing/summary', async (req, res) => {
+    try {
+        const { month } = req.query;
+        let dateFilter = {};
+        if (month) {
+            const [y, m] = String(month).split('-').map(Number);
+            dateFilter = {
+                createdAt: {
+                    $gte: new Date(y, m - 1, 1),
+                    $lt: new Date(y, m, 1),
+                },
+            };
+        }
+
+        const match = { status: 'completed', ...dateFilter };
+        const byType = await BillingTransaction.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: '$type',
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const revenueTotal = await BillingTransaction.aggregate([
+            { $match: { ...match, type: { $in: ['subscription_payment', 'topup', 'onboarding'] } } },
+            { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]);
+
+        const schoolRows = await School.find()
+            .select('name subscriptionPlanKey subscriptionStatus minuteBalance billingMode foundingPartner onboardingFeePaid paypalSubscriptionId lastBillingCyclePaymentAt')
+            .sort({ name: 1 })
+            .lean();
+
+        res.json({
+            period: month || 'all',
+            revenueUsd: revenueTotal[0]?.total || 0,
+            byType: byType.reduce((acc, row) => {
+                acc[row._id] = { totalUsd: row.total, count: row.count };
+                return acc;
+            }, {}),
+            schools: schoolRows.map((s) => ({
+                id: s._id.toString(),
+                name: s.name,
+                subscriptionPlanKey: s.subscriptionPlanKey || '',
+                subscriptionStatus: s.subscriptionStatus || 'none',
+                billingMode: s.billingMode || 'none',
+                minuteBalance: typeof s.minuteBalance === 'number' ? s.minuteBalance : null,
+                foundingPartner: Boolean(s.foundingPartner),
+                onboardingFeePaid: Boolean(s.onboardingFeePaid),
+                paypalSubscriptionId: s.paypalSubscriptionId || '',
+                lastBillingCyclePaymentAt: s.lastBillingCyclePaymentAt || null,
+            })),
+        });
+    } catch (err) {
+        console.error('Admin billing summary error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/admin/billing/transactions — paginated ledger
+router.get('/billing/transactions', async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+        const skip = parseInt(req.query.skip || '0', 10);
+        const { schoolId, type } = req.query;
+
+        const q = {};
+        if (schoolId && mongoose.Types.ObjectId.isValid(schoolId)) q.schoolId = schoolId;
+        if (type) q.type = type;
+
+        const [items, total] = await Promise.all([
+            BillingTransaction.find(q)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .populate('schoolId', 'name')
+                .lean(),
+            BillingTransaction.countDocuments(q),
+        ]);
+
+        res.json({
+            total,
+            items: items.map((t) => ({
+                id: t._id.toString(),
+                schoolId: t.schoolId?._id?.toString() || null,
+                schoolName: t.schoolId?.name || null,
+                type: t.type,
+                amount: t.amount,
+                currency: t.currency,
+                status: t.status,
+                planKey: t.planKey,
+                description: t.description,
+                paypalSubscriptionId: t.paypalSubscriptionId,
+                paypalOrderId: t.paypalOrderId,
+                paypalSaleId: t.paypalSaleId,
+                createdAt: t.createdAt,
+            })),
+        });
+    } catch (err) {
+        console.error('Admin billing transactions error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/admin/billing/minutes/:schoolId — minute ledger for a school
+router.get('/billing/minutes/:schoolId', async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({ error: 'Invalid school id' });
+        }
+        const limit = Math.min(parseInt(req.query.limit || '100', 10), 500);
+        const entries = await MinuteLedger.find({ schoolId })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .lean();
+        res.json(entries);
+    } catch (err) {
+        console.error('Admin minute ledger error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // PUT /api/admin/schools/:id - Update school
 router.put('/schools/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, address, aiNumber, routingNumber, elevenlabsAgentId, status } = req.body;
+        const { name, address, aiNumber, routingNumber, elevenlabsAgentId, status, foundingPartner, minuteBalance, billingMode } = req.body;
 
         const school = await School.findById(id);
         if (!school) {
@@ -403,6 +537,13 @@ router.put('/schools/:id', async (req, res) => {
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (status !== undefined) school.status = status;
+        if (foundingPartner !== undefined) school.foundingPartner = Boolean(foundingPartner);
+        if (minuteBalance !== undefined && minuteBalance !== null && !Number.isNaN(Number(minuteBalance))) {
+            school.minuteBalance = Number(minuteBalance);
+        }
+        if (billingMode !== undefined && ['none', 'metered'].includes(billingMode)) {
+            school.billingMode = billingMode;
+        }
 
         await school.save();
 

@@ -33,7 +33,22 @@ const schoolSchema = new mongoose.Schema({
     tourConfirmationEmailTemplate: { type: String, default: 'Dear {parent_name},\n\nYour tour at {school_name} has been scheduled for {tour_date}.\n\nLocation: {school_address}\n\nWe look forward to seeing you!\n\nWarm regards,\n{school_name}' },
     tourReminderSmsTemplate: { type: String, default: 'Hi {parent_name}, this is a reminder for your tour at {school_name} tomorrow, {tour_date}. See you then!' },
     // Analytics
-    wordCloud: { type: Array, default: [] }
+    wordCloud: { type: Array, default: [] },
+    // Billing / PayPal (metered minutes when billingMode === 'metered')
+    billingMode: { type: String, enum: ['none', 'metered'], default: 'none' },
+    subscriptionPlanKey: { type: String, enum: ['starter', 'growth', 'full_enrollment', ''], default: '' },
+    subscriptionStatus: {
+        type: String,
+        enum: ['none', 'active', 'approval_pending', 'suspended', 'cancelled', 'past_due'],
+        default: 'none',
+    },
+    paypalSubscriptionId: { type: String, default: '' },
+    paypalLastPaymentId: { type: String, default: '' },
+    /** Remaining minute credits (includes rollover + top-ups). Only enforced when billingMode is metered. */
+    minuteBalance: { type: Number, default: null },
+    foundingPartner: { type: Boolean, default: false },
+    onboardingFeePaid: { type: Boolean, default: false },
+    lastBillingCyclePaymentAt: { type: Date, default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('School', schoolSchema);
