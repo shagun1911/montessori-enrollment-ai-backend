@@ -31,6 +31,94 @@ router.get('/dashboard', async (req, res) => {
         const totalFollowups = await Followup.countDocuments();
         const sentFollowups = await Followup.countDocuments({ status: 'sent' });
         const totalReferrals = await Referral.countDocuments();
+        
+        // New metrics
+        const totalToursBooked = await TourBooking.countDocuments();
+        
+        // Calculate total call minutes
+        const callMinutesAggregation = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription' } },
+            { 
+                $group: { 
+                    _id: null, 
+                    totalMinutes: { 
+                        $sum: { 
+                            $ifNull: [
+                                '$metadata.phone_call.call_duration_secs', 
+                                { $ifNull: ['$metadata.call_duration_secs', { $ifNull: ['$metadata.system__call_duration_secs', 0] }] }
+                            ] 
+                        } 
+                    } 
+                } 
+            }
+        ]);
+        const totalCallMinutes = callMinutesAggregation[0]?.totalMinutes || 0;
+        
+        // Get top schools by call minutes
+        const topSchoolsByMinutes = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription', schoolId: { $exists: true, $ne: null } } },
+            {
+                $group: {
+                    _id: '$schoolId',
+                    totalMinutes: { 
+                        $sum: { 
+                            $ifNull: [
+                                '$metadata.phone_call.call_duration_secs', 
+                                { $ifNull: ['$metadata.call_duration_secs', { $ifNull: ['$metadata.system__call_duration_secs', 0] }] }
+                            ] 
+                        } 
+                    },
+                    totalCalls: { $sum: 1 }
+                }
+            },
+            { $sort: { totalMinutes: -1 } },
+            { $limit: 10 },
+            {
+                $lookup: {
+                    from: 'schools',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'school'
+                }
+            },
+            { $unwind: '$school' },
+            {
+                $project: {
+                    schoolId: '$_id',
+                    schoolName: '$school.name',
+                    totalMinutes: 1,
+                    totalCalls: 1
+                }
+            }
+        ]);
+        
+        // Get call minutes over time for line graph (last 30 days)
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const callMinutesOverTime = await ElevenLabsWebhook.aggregate([
+            { 
+                $match: { 
+                    type: 'post_call_transcription',
+                    received_at: { $gte: thirtyDaysAgo }
+                } 
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$received_at" } },
+                    totalMinutes: { 
+                        $sum: { 
+                            $ifNull: [
+                                '$metadata.phone_call.call_duration_secs', 
+                                { $ifNull: ['$metadata.call_duration_secs', { $ifNull: ['$metadata.system__call_duration_secs', 0] }] }
+                            ] 
+                        } 
+                    },
+                    totalCalls: { $sum: 1 }
+                }
+            },
+            { $sort: { '_id': 1 } }
+        ]);
 
         // Recent calls with school name
         const recentCalls = await ElevenLabsWebhook.find({ type: 'post_call_transcription' })
@@ -45,7 +133,7 @@ router.get('/dashboard', async (req, res) => {
             caller_name: c.tour_booking_extracted?.name || 'Parent',
             caller_phone: c.metadata?.phone_call?.from_number || 'Unknown',
             call_type: c.tour_booking_detected ? 'Tour Booking' : 'Inquiry',
-            duration: c.metadata?.phone_call?.duration_seconds || 0,
+            duration: c.metadata?.phone_call?.call_duration_secs || c.metadata?.call_duration_secs || c.metadata?.system__call_duration_secs || 0,
             timestamp: c.received_at,
         }));
 
@@ -69,8 +157,11 @@ router.get('/dashboard', async (req, res) => {
             metrics: [
                 { label: 'Total Schools', value: totalSchools },
                 { label: 'Total Calls', value: totalCalls },
+                { label: 'Total Tours Booked', value: totalToursBooked },
+                { label: 'Total Call Minutes', value: Math.round(totalCallMinutes / 60) }, // Convert to minutes
             ],
-            recentCalls: formattedCalls,
+            callMinutesOverTime,
+            topSchoolsByMinutes,
             recentFollowups: formattedFollowups,
             overview: {
                 totalSchools,
@@ -80,6 +171,8 @@ router.get('/dashboard', async (req, res) => {
                 totalFollowups,
                 sentFollowups,
                 totalReferrals,
+                totalToursBooked,
+                totalCallMinutes: Math.round(totalCallMinutes / 60),
             },
         });
     } catch (err) {
