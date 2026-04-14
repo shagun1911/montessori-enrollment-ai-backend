@@ -74,6 +74,9 @@ router.get('/status', async (req, res) => {
                 usd: topupUsd,
                 minutes: topupMinutes,
             },
+            paypalPlansConfigured: paypalPlansConfigured({
+                foundingPartner: Boolean(school.foundingPartner),
+            }),
         });
     } catch (err) {
         console.error('[billing/status]', err);
@@ -81,7 +84,7 @@ router.get('/status', async (req, res) => {
     }
 });
 
-// POST /api/billing/subscribe  { planKey: 'starter'|'growth'|'full_enrollment', returnUrl, cancelUrl }
+// POST /api/billing/subscribe  { planKey: 'starter'|'growth'|'full_enrollment'|'demo', returnUrl, cancelUrl }
 router.post('/subscribe', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;

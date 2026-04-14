@@ -3,7 +3,7 @@
  * PayPal Billing Plan IDs are set via env (create plans in PayPal Dashboard or API with matching amounts).
  */
 
-const PLAN_ORDER = ['starter', 'growth', 'full_enrollment'];
+const PLAN_ORDER = ['starter', 'growth', 'full_enrollment', 'demo'];
 
 const PLAN_DEFS = {
     starter: {
@@ -37,6 +37,16 @@ const PLAN_DEFS = {
         paypalPlanEnvKey: 'PAYPAL_PLAN_FULL_ENROLLMENT',
         paypalPlanFoundingEnvKey: 'PAYPAL_PLAN_FULL_ENROLLMENT_FOUNDING',
     },
+    /** Sandbox / QA — matches createDemoPlan.js + paypal-demo-plan.json metadata */
+    demo: {
+        key: 'demo',
+        tier: 'Demo',
+        tagline: 'Try Nora with a low-cost sandbox subscription',
+        monthlyUsd: 2,
+        onboardingUsd: 0,
+        includedMinutesPerMonth: 2,
+        paypalPlanEnvKey: 'PAYPAL_PLAN_DEMO',
+    },
 };
 
 function getPlanDef(planKey) {
@@ -63,7 +73,8 @@ function listPlansPublic() {
 function resolvePaypalPlanId(planKey, { foundingPartner } = {}) {
     const def = getPlanDef(planKey);
     if (!def) return null;
-    const foundingId = process.env[def.paypalPlanFoundingEnvKey];
+    const foundingKey = def.paypalPlanFoundingEnvKey;
+    const foundingId = foundingKey ? process.env[foundingKey] : undefined;
     const standardId = process.env[def.paypalPlanEnvKey];
     if (foundingPartner && foundingId && String(foundingId).trim()) {
         return String(foundingId).trim();

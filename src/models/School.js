@@ -36,7 +36,11 @@ const schoolSchema = new mongoose.Schema({
     wordCloud: { type: Array, default: [] },
     // Billing / PayPal (metered minutes when billingMode === 'metered')
     billingMode: { type: String, enum: ['none', 'metered'], default: 'none' },
-    subscriptionPlanKey: { type: String, enum: ['starter', 'growth', 'full_enrollment', ''], default: '' },
+    subscriptionPlanKey: {
+        type: String,
+        enum: ['starter', 'growth', 'full_enrollment', 'demo', ''],
+        default: '',
+    },
     subscriptionStatus: {
         type: String,
         enum: ['none', 'active', 'approval_pending', 'suspended', 'cancelled', 'past_due'],
