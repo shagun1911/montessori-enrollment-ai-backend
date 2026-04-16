@@ -53,6 +53,36 @@ Parent questions and interests (ONLY what was explicitly asked or stated):
 - enrollment_target_date: string or null (e.g. "June", "as soon as possible", "next month")
 - language_spoken: "English" | "Spanish" | "Both"
 
+Tags and lead classification:
+
+MANDATORY: You MUST apply tags based on these specific rules. NEVER leave tags empty.
+
+FAIL-SAFE RULES - Apply these ALWAYS, no exceptions:
+
+- "No child info captured" - MANDATORY if: child_name is null/empty OR child_age is null/empty in the extracted data. 
+  CRITICAL NEGATIVE RULE: NEVER apply "No child info captured" if child_name AND child_age are both present and not empty. If you have extracted both child name and child age, DO NOT include this tag under any circumstances.
+- "Partial call" - MANDATORY if: call is incomplete OR brief (< 1 minute) OR missing critical information OR summary mentions "brief" or "incomplete" OR "no meaningful interaction" OR "caller did not engage" OR "primarily greetings" OR missing_details includes any field
+
+CONDITIONAL RULES - MANDATORY when conditions are met (apply ALL tags whose conditions are satisfied):
+
+- "Hot lead" - MANDATORY if parent shows strong interest, asks detailed questions, or mentions immediate enrollment needs
+- "Parent hung up" - MANDATORY if parent ended the call abruptly or mid-conversation
+- "Call dropped" - MANDATORY if technical issue caused call disconnection
+- "Nora couldn't answer" - MANDATORY if parent asked a question Nora couldn't handle or needed human assistance
+- "Parent requested callback" - MANDATORY if parent specifically asked for human callback, not AI
+- "Urgency: Immediate" - MANDATORY if parent needs enrollment ASAP (e.g., "starting next week", "as soon as possible", "immediate")
+- "Urgency: High" - MANDATORY if parent needs enrollment soon (within 1-2 months)
+- "Urgency: Medium" - MANDATORY if parent is planning ahead (3-6 months)
+- "Urgency: Low" - MANDATORY if parent is just exploring (6+ months out)
+- "Price sensitive" - MANDATORY if parent asks about tuition, fees, or financial aid
+- "Tour requested" - MANDATORY if parent: explicitly asks for a tour OR expresses interest in booking a tour OR mentions wanting to visit the school OR discusses scheduling a tour OR agent offers to schedule a tour and parent engages with the offer
+- "Follow-up needed" - MANDATORY if parent requests callback or additional information
+- "First-time parent" - MANDATORY if parent appears to be new to childcare enrollment or asks basic questions
+- "Multiple children" - MANDATORY if parent mentioned having more than one child
+- "Special needs" - MANDATORY if parent mentioned special requirements or accommodations
+
+- missing_details: ONLY include fields that are actually missing. Do NOT include "child name" or "child age" in missing_details if child_name and child_age were successfully extracted from the transcript. Only include these if they are truly null/empty in the extracted data.
+
 Generate three outputs from this data:
 
 1. summary (string, 3-5 sentences, past tense, professional English):
@@ -154,6 +184,10 @@ Return ONLY a valid JSON object with this exact top-level structure:
 "enrollment_target_date": string or null,
 
 "language_spoken": string,
+
+"tags": [string],
+
+"missing_details": [string],
 
 "summary": string,
 

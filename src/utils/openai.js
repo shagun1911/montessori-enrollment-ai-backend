@@ -150,7 +150,10 @@ async function extractTourDetails(transcriptText, existingDetails = {}) {
             childAge: existingDetails.childAge || '',
             purpose: existingDetails.purpose || 'Brief inquiry - insufficient details captured',
             questionsAsked: [],
-            notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.'
+            notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.',
+            tags: ['Partial call'],
+            language: '',
+            missingDetails: ['Insufficient call duration']
         };
     }
 
@@ -170,7 +173,10 @@ async function extractTourDetails(transcriptText, existingDetails = {}) {
             childAge: extracted.child_age ? (Array.isArray(extracted.child_age) ? extracted.child_age[0] : extracted.child_age) : existingDetails.childAge || '',
             purpose: extracted.summary || existingDetails.purpose || 'Brief inquiry',
             questionsAsked: extracted.questions_asked || [],
-            notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : ''
+            notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : '',
+            tags: extracted.tags || [],
+            language: extracted.language_spoken || '',
+            missingDetails: extracted.missing_details || []
         };
     } catch (err) {
         console.error('[OpenAI] Failed to parse comprehensive tour details JSON:', err);
@@ -199,7 +205,10 @@ async function batchExtractTourDetails(tourBatch) {
                 childAge: tour.existingDetails?.childAge || '',
                 purpose: tour.existingDetails?.purpose || 'Brief inquiry - insufficient details captured',
                 questionsAsked: [],
-                notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.'
+                notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.',
+                tags: ['Partial call'],
+                language: '',
+                missingDetails: ['Insufficient call duration']
             };
         } else {
             validTours.push(tour);
@@ -222,7 +231,10 @@ async function batchExtractTourDetails(tourBatch) {
                         childAge: tour.existingDetails?.childAge || '',
                         purpose: tour.existingDetails?.purpose || 'Brief inquiry - processing failed',
                         questionsAsked: [],
-                        notes: 'Failed to process transcript with AI'
+                        notes: 'Failed to process transcript with AI',
+                        tags: [],
+                        language: '',
+                        missingDetails: []
                     }
                 };
             }
@@ -237,7 +249,10 @@ async function batchExtractTourDetails(tourBatch) {
                     childAge: extracted.child_age ? (Array.isArray(extracted.child_age) ? extracted.child_age[0] : extracted.child_age) : tour.existingDetails?.childAge || '',
                     purpose: extracted.summary || tour.existingDetails?.purpose || 'Brief inquiry',
                     questionsAsked: extracted.questions_asked || [],
-                    notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : ''
+                    notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : '',
+                    tags: extracted.tags || [],
+                    language: extracted.language_spoken || '',
+                    missingDetails: extracted.missing_details || []
                 }
             };
         } catch (err) {
@@ -249,7 +264,10 @@ async function batchExtractTourDetails(tourBatch) {
                     childAge: tour.existingDetails?.childAge || '',
                     purpose: tour.existingDetails?.purpose || 'Brief inquiry - processing error',
                     questionsAsked: [],
-                    notes: 'Error occurred during processing'
+                    notes: 'Error occurred during processing',
+                    tags: [],
+                    language: '',
+                    missingDetails: []
                 }
             };
         }

@@ -549,29 +549,99 @@ router.get('/daily-insights', async (req, res) => {
         // Use cached word cloud from School model
         const wordCloud = school?.wordCloud || [];
 
-        const needsAttention = todayWebhooks
-            .filter(wh => !wh.tour_booking_detected && !wh.actionTaken)
-            .map(wh => {
-                return {
-                    id: wh._id.toString(),
-                    conversationId: wh.conversation_id,
-                    callerName: wh.tour_booking_extracted?.name || 'Parent',
-                    callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
-                    summary: wh.summary || '',
-                    timestamp: wh.metadata?.start_time_unix_secs
-                        ? new Date(wh.metadata.start_time_unix_secs * 1000)
-                        : wh.received_at,
-                    recordingUrl: wh.conversation_id
-                        ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
-                        : null,
-                    duration: getCallDurationSeconds(wh),
-                    questionsAsked: [], // Will be enriched or replaced by word cloud data
-                    actionTaken: wh.actionTaken || false,
-                    actionTakenAt: wh.actionTakenAt || null,
-                    actionTakenFeedback: wh.actionTakenFeedback || '',
-                    feedbackHistory: wh.feedbackHistory || undefined
-                };
-            });
+        // Extract comprehensive data from transcripts using single prompt for needs-attention calls
+        const needsAttention = await Promise.all(
+            todayWebhooks
+                .filter(wh => !wh.tour_booking_detected && !wh.actionTaken)
+                .map(async (wh) => {
+                    const transcriptText = Array.isArray(wh.transcript) 
+                        ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                        : '';
+
+                    let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
+                    
+                    // Extract if we have transcript data and either hasn't been processed OR doesn't have tags yet OR tags array is empty
+                    if (transcriptText && (!wh.aiProcessed || !wh.extractedTags || wh.extractedTags.length === 0)) {
+                        try {
+                            comprehensiveData = await extractTourDetails(transcriptText, {
+                                childName: wh.tour_booking_extracted?.childName || '',
+                                childAge: wh.tour_booking_extracted?.childAge || '',
+                                purpose: wh.summary || ''
+                            });
+                            
+                            // Post-processing: Remove "No child info captured" tag if child info is present
+                            if (comprehensiveData.childName && comprehensiveData.childAge) {
+                                comprehensiveData.tags = comprehensiveData.tags.filter(tag => 
+                                    !tag.toLowerCase().includes('no child info')
+                                );
+                            }
+                            
+                            // Post-processing: Ensure "No child info captured" tag is applied if child info is missing
+                            if ((!comprehensiveData.childName || !comprehensiveData.childAge) && 
+                                (comprehensiveData.missingDetails && 
+                                 (comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child name')) || 
+                                  comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child age'))))) {
+                                if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('no child info'))) {
+                                    comprehensiveData.tags.push('No child info captured');
+                                }
+                            }
+                            
+                            // Post-processing: Ensure "Partial call" tag is applied if missing_details has any field
+                            if (comprehensiveData.missingDetails && comprehensiveData.missingDetails.length > 0) {
+                                if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('partial call'))) {
+                                    comprehensiveData.tags.push('Partial call');
+                                }
+                            }
+                            
+                            // Cache the extracted data to the webhook document
+                            await ElevenLabsWebhook.findByIdAndUpdate(wh._id, {
+                                aiProcessed: true,
+                                extractedTags: comprehensiveData.tags,
+                                extractedChildName: comprehensiveData.childName,
+                                extractedChildAge: comprehensiveData.childAge,
+                                extractedLanguage: comprehensiveData.language,
+                                extractedMissingDetails: comprehensiveData.missingDetails
+                            }).catch(err => console.error('[DAILY-INSIGHTS] Failed to cache comprehensive data:', err));
+                        } catch (err) {
+                            console.error('[DAILY-INSIGHTS] Failed to extract comprehensive data:', err);
+                        }
+                    } else if (wh.aiProcessed) {
+                        // Use cached comprehensive data if available
+                        comprehensiveData = {
+                            tags: wh.extractedTags || [],
+                            childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
+                            childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
+                            language: wh.extractedLanguage || '',
+                            missingDetails: wh.extractedMissingDetails || []
+                        };
+                    }
+
+                    return {
+                        id: wh._id.toString(),
+                        conversationId: wh.conversation_id,
+                        callerName: wh.tour_booking_extracted?.name || 'Parent',
+                        callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
+                        summary: wh.summary || '',
+                        timestamp: wh.metadata?.start_time_unix_secs
+                            ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                            : wh.received_at,
+                        recordingUrl: wh.conversation_id
+                            ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
+                            : null,
+                        duration: getCallDurationSeconds(wh),
+                        questionsAsked: wh.questions_asked || [],
+                        actionTaken: wh.actionTaken || false,
+                        actionTakenAt: wh.actionTakenAt || null,
+                        actionTakenFeedback: wh.actionTakenFeedback || '',
+                        feedbackHistory: wh.feedbackHistory || undefined,
+                        tags: comprehensiveData.tags,
+                        childName: comprehensiveData.childName,
+                        childAge: comprehensiveData.childAge,
+                        language: comprehensiveData.language,
+                        missingDetails: comprehensiveData.missingDetails
+                    };
+                })
+        );
 
         // ── 2. Today's Tours: full detail with questions from transcript ──
         const todaysTourDocs = await TourBooking.find({
@@ -726,23 +796,94 @@ router.get('/action-needed', async (req, res) => {
             schoolId: schoolObjectId
         }).sort({ received_at: -1 }).lean();
 
-        const actionNeeded = actionNeededWebhooks.map(wh => ({
-            id: wh._id.toString(),
-            conversationId: wh.conversation_id,
-            callerName: wh.tour_booking_extracted?.name || 'Parent',
-            callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
-            summary: wh.summary || '',
-            timestamp: wh.metadata?.start_time_unix_secs
-                ? new Date(wh.metadata.start_time_unix_secs * 1000)
-                : wh.received_at,
-            recordingUrl: wh.conversation_id
-                ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
-                : null,
-            duration: getCallDurationSeconds(wh),
-            questionsAsked: wh.questions_asked || [],
-            actionTakenFeedback: wh.actionTakenFeedback || undefined,
-            actionTakenAt: wh.actionTakenAt || undefined,
-            feedbackHistory: wh.feedbackHistory || undefined
+        // Extract comprehensive data from transcripts using single prompt
+        const actionNeeded = await Promise.all(actionNeededWebhooks.map(async (wh) => {
+            const transcriptText = Array.isArray(wh.transcript) 
+                ? wh.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
+                : '';
+
+            let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
+            
+            // Force re-extraction for all calls to apply new prompt logic
+            // TODO: Remove this force re-extraction after all calls have been re-processed
+            if (transcriptText) {
+                try {
+                    comprehensiveData = await extractTourDetails(transcriptText, {
+                        childName: wh.tour_booking_extracted?.childName || '',
+                        childAge: wh.tour_booking_extracted?.childAge || '',
+                        purpose: wh.summary || ''
+                    });
+                    
+                    // Post-processing: Remove "No child info captured" tag if child info is present
+                    if (comprehensiveData.childName && comprehensiveData.childAge) {
+                        comprehensiveData.tags = comprehensiveData.tags.filter(tag => 
+                            !tag.toLowerCase().includes('no child info')
+                        );
+                    }
+                    
+                    // Post-processing: Ensure "No child info captured" tag is applied if child info is missing
+                    if ((!comprehensiveData.childName || !comprehensiveData.childAge) && 
+                        (comprehensiveData.missingDetails && 
+                         (comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child name')) || 
+                          comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child age'))))) {
+                        if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('no child info'))) {
+                            comprehensiveData.tags.push('No child info captured');
+                        }
+                    }
+                    
+                    // Post-processing: Ensure "Partial call" tag is applied if missing_details has any field
+                    if (comprehensiveData.missingDetails && comprehensiveData.missingDetails.length > 0) {
+                        if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('partial call'))) {
+                            comprehensiveData.tags.push('Partial call');
+                        }
+                    }
+                    
+                    // Cache the extracted data to the webhook document
+                    await ElevenLabsWebhook.findByIdAndUpdate(wh._id, {
+                        aiProcessed: true,
+                        extractedTags: comprehensiveData.tags,
+                        extractedChildName: comprehensiveData.childName,
+                        extractedChildAge: comprehensiveData.childAge,
+                        extractedLanguage: comprehensiveData.language,
+                        extractedMissingDetails: comprehensiveData.missingDetails
+                    }).catch(err => console.error('[ACTION-NEEDED] Failed to cache comprehensive data:', err));
+                } catch (err) {
+                    console.error('[ACTION-NEEDED] Failed to extract comprehensive data:', err);
+                }
+            } else if (wh.aiProcessed) {
+                // Use cached comprehensive data if available
+                comprehensiveData = {
+                    tags: wh.extractedTags || [],
+                    childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
+                    childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
+                    language: wh.extractedLanguage || '',
+                    missingDetails: wh.extractedMissingDetails || []
+                };
+            }
+
+            return {
+                id: wh._id.toString(),
+                conversationId: wh.conversation_id,
+                callerName: wh.tour_booking_extracted?.name || 'Parent',
+                callerPhone: wh.metadata?.phone_call?.from_number || wh.tour_booking_extracted?.phone || 'Unknown',
+                summary: wh.summary || '',
+                timestamp: wh.metadata?.start_time_unix_secs
+                    ? new Date(wh.metadata.start_time_unix_secs * 1000)
+                    : wh.received_at,
+                recordingUrl: wh.conversation_id
+                    ? `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`
+                    : null,
+                duration: getCallDurationSeconds(wh),
+                questionsAsked: wh.questions_asked || [],
+                actionTakenFeedback: wh.actionTakenFeedback || undefined,
+                actionTakenAt: wh.actionTakenAt || undefined,
+                feedbackHistory: wh.feedbackHistory || undefined,
+                tags: comprehensiveData.tags,
+                childName: comprehensiveData.childName,
+                childAge: comprehensiveData.childAge,
+                language: comprehensiveData.language,
+                missingDetails: comprehensiveData.missingDetails
+            };
         }));
 
         res.json({ actionNeeded });
