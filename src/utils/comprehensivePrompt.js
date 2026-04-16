@@ -57,19 +57,24 @@ Tags and lead classification:
 
 MANDATORY: You MUST apply tags based on these specific rules. NEVER leave tags empty.
 
+CALL DROP-OFF REASONS - MANDATORY tags when call doesn't result in tour booking:
+
+- "Parent hung up" - MANDATORY if parent ended the call abruptly or mid-conversation
+- "Call dropped" - MANDATORY if technical issue caused call disconnection
+- "Nora couldn't answer" - MANDATORY if parent asked a question Nora couldn't handle or needed human assistance
+- "Parent requested callback" - MANDATORY if parent specifically asked for human callback, not AI
+- "No child info captured" - MANDATORY if: child_name is null/empty OR child_age is null/empty in the extracted data. CRITICAL NEGATIVE RULE: NEVER apply "No child info captured" if child_name AND child_age are both present and not empty.
+- "Price concern" - MANDATORY if parent asks about pricing/tuition and seems hesitant or doesn't proceed with booking
+- "Not ready yet" - MANDATORY if parent says they're not ready to enroll yet, still deciding, or exploring options
+- "Wrong school" - MANDATORY if parent realizes it's the wrong location/school or asks about a different Kids R Kids location
+
 FAIL-SAFE RULES - Apply these ALWAYS, no exceptions:
 
-- "No child info captured" - MANDATORY if: child_name is null/empty OR child_age is null/empty in the extracted data. 
-  CRITICAL NEGATIVE RULE: NEVER apply "No child info captured" if child_name AND child_age are both present and not empty. If you have extracted both child name and child age, DO NOT include this tag under any circumstances.
 - "Partial call" - MANDATORY if: call is incomplete OR brief (< 1 minute) OR missing critical information OR summary mentions "brief" or "incomplete" OR "no meaningful interaction" OR "caller did not engage" OR "primarily greetings" OR missing_details includes any field
 
 CONDITIONAL RULES - MANDATORY when conditions are met (apply ALL tags whose conditions are satisfied):
 
 - "Hot lead" - MANDATORY if parent shows strong interest, asks detailed questions, or mentions immediate enrollment needs
-- "Parent hung up" - MANDATORY if parent ended the call abruptly or mid-conversation
-- "Call dropped" - MANDATORY if technical issue caused call disconnection
-- "Nora couldn't answer" - MANDATORY if parent asked a question Nora couldn't handle or needed human assistance
-- "Parent requested callback" - MANDATORY if parent specifically asked for human callback, not AI
 - "Urgency: Immediate" - MANDATORY if parent needs enrollment ASAP (e.g., "starting next week", "as soon as possible", "immediate")
 - "Urgency: High" - MANDATORY if parent needs enrollment soon (within 1-2 months)
 - "Urgency: Medium" - MANDATORY if parent is planning ahead (3-6 months)

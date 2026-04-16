@@ -183,6 +183,68 @@ router.get('/dashboard', async (req, res) => {
             timestamp: f.createdAt,
         }));
 
+        // Aggregate call drop-off reasons from extractedTags
+        const callDropOffReasons = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription', ...dateFilter } },
+            { $unwind: { path: '$extractedTags', preserveNullAndEmptyArrays: true } },
+            {
+                $match: {
+                    extractedTags: {
+                        $in: ['Parent hung up', 'Call dropped', 'Nora couldn\'t answer', 'Parent requested callback', 'No child info captured', 'Price concern', 'Not ready yet', 'Wrong school']
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: '$extractedTags',
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { count: -1 } }
+        ]);
+
+        const totalDropOffCalls = callDropOffReasons.reduce((sum, item) => sum + item.count, 0);
+        const conversionReasons = callDropOffReasons.map(item => ({
+            reason: item._id,
+            count: item.count,
+            percentage: totalDropOffCalls > 0 ? Math.round((item.count / totalDropOffCalls) * 100) : 0
+        }));
+
+        // Identify schools that need tuning based on "Nora couldn't answer" tags
+        const schoolsNeedingTuning = await ElevenLabsWebhook.aggregate([
+            { $match: { type: 'post_call_transcription', schoolId: { $exists: true, $ne: null }, ...dateFilter } },
+            { $unwind: { path: '$extractedTags', preserveNullAndEmptyArrays: true } },
+            {
+                $match: {
+                    extractedTags: 'Nora couldn\'t answer'
+                }
+            },
+            {
+                $group: {
+                    _id: '$schoolId',
+                    count: { $sum: 1 }
+                }
+            },
+            { $match: { count: { $gte: 3 } } }, // Schools with 3+ Nora couldn't answer calls
+            {
+                $lookup: {
+                    from: 'schools',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'school'
+                }
+            },
+            { $unwind: '$school' },
+            {
+                $project: {
+                    schoolId: '$_id',
+                    schoolName: '$school.name',
+                    count: 1
+                }
+            },
+            { $sort: { count: -1 } }
+        ]);
+
         res.json({
             metrics: [
                 { label: 'Total Schools', value: totalSchools },
@@ -193,6 +255,8 @@ router.get('/dashboard', async (req, res) => {
             callMinutesOverTime,
             topSchoolsByMinutes,
             recentFollowups: formattedFollowups,
+            conversionReasons,
+            schoolsNeedingTuning,
             overview: {
                 totalSchools,
                 activeSchools,

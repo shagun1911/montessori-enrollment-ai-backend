@@ -559,9 +559,18 @@ router.get('/daily-insights', async (req, res) => {
                         : '';
 
                     let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
-                    
-                    // Extract if we have transcript data and either hasn't been processed OR doesn't have tags yet OR tags array is empty
-                    if (transcriptText && (!wh.aiProcessed || !wh.extractedTags || wh.extractedTags.length === 0)) {
+
+                    // Use cached comprehensive data if available, otherwise extract
+                    if (wh.aiProcessed && wh.extractedTags && wh.extractedTags.length > 0) {
+                        // Use cached comprehensive data
+                        comprehensiveData = {
+                            tags: wh.extractedTags || [],
+                            childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
+                            childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
+                            language: wh.extractedLanguage || '',
+                            missingDetails: wh.extractedMissingDetails || []
+                        };
+                    } else if (transcriptText) {
                         try {
                             comprehensiveData = await extractTourDetails(transcriptText, {
                                 childName: wh.tour_booking_extracted?.childName || '',
@@ -700,13 +709,14 @@ router.get('/daily-insights', async (req, res) => {
             }
         }));
 
-        // Batch process the ones that need it
+        // Batch process the ones that need it (limit to 5 to prevent slow loading)
         if (toursToProcess.length > 0) {
-            console.log(`[DAILY-INSIGHTS] Batch processing ${toursToProcess.length} tours...`);
+            console.log(`[DAILY-INSIGHTS] Batch processing ${toursToProcess.length} tours (limiting to 5)...`);
             const { batchExtractTourDetails } = require('../utils/openai');
-            const batchResults = await batchExtractTourDetails(toursToProcess);
+            const toursToProcessNow = toursToProcess.slice(0, 5); // Process max 5 at a time
+            const batchResults = await batchExtractTourDetails(toursToProcessNow);
 
-            for (const item of toursToProcess) {
+            for (const item of toursToProcessNow) {
                 const extracted = batchResults[item.id] || {};
                 const safeStr = (v) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v || ''));
                 
@@ -803,41 +813,50 @@ router.get('/action-needed', async (req, res) => {
                 : '';
 
             let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
-            
-            // Force re-extraction for all calls to apply new prompt logic
-            // TODO: Remove this force re-extraction after all calls have been re-processed
-            if (transcriptText) {
+
+            // Use cached comprehensive data if available, otherwise extract
+            if (wh.aiProcessed && wh.extractedTags && wh.extractedTags.length > 0) {
+                // Use cached comprehensive data
+                comprehensiveData = {
+                    tags: wh.extractedTags || [],
+                    childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
+                    childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
+                    language: wh.extractedLanguage || '',
+                    missingDetails: wh.extractedMissingDetails || []
+                };
+            } else if (transcriptText) {
+                // Extract and cache if no cached data exists
                 try {
                     comprehensiveData = await extractTourDetails(transcriptText, {
                         childName: wh.tour_booking_extracted?.childName || '',
                         childAge: wh.tour_booking_extracted?.childAge || '',
                         purpose: wh.summary || ''
                     });
-                    
+
                     // Post-processing: Remove "No child info captured" tag if child info is present
                     if (comprehensiveData.childName && comprehensiveData.childAge) {
-                        comprehensiveData.tags = comprehensiveData.tags.filter(tag => 
+                        comprehensiveData.tags = comprehensiveData.tags.filter(tag =>
                             !tag.toLowerCase().includes('no child info')
                         );
                     }
-                    
+
                     // Post-processing: Ensure "No child info captured" tag is applied if child info is missing
-                    if ((!comprehensiveData.childName || !comprehensiveData.childAge) && 
-                        (comprehensiveData.missingDetails && 
-                         (comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child name')) || 
+                    if ((!comprehensiveData.childName || !comprehensiveData.childAge) &&
+                        (comprehensiveData.missingDetails &&
+                         (comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child name')) ||
                           comprehensiveData.missingDetails.some(m => m.toLowerCase().includes('child age'))))) {
                         if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('no child info'))) {
                             comprehensiveData.tags.push('No child info captured');
                         }
                     }
-                    
+
                     // Post-processing: Ensure "Partial call" tag is applied if missing_details has any field
                     if (comprehensiveData.missingDetails && comprehensiveData.missingDetails.length > 0) {
                         if (!comprehensiveData.tags.some(tag => tag.toLowerCase().includes('partial call'))) {
                             comprehensiveData.tags.push('Partial call');
                         }
                     }
-                    
+
                     // Cache the extracted data to the webhook document
                     await ElevenLabsWebhook.findByIdAndUpdate(wh._id, {
                         aiProcessed: true,
@@ -850,15 +869,6 @@ router.get('/action-needed', async (req, res) => {
                 } catch (err) {
                     console.error('[ACTION-NEEDED] Failed to extract comprehensive data:', err);
                 }
-            } else if (wh.aiProcessed) {
-                // Use cached comprehensive data if available
-                comprehensiveData = {
-                    tags: wh.extractedTags || [],
-                    childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
-                    childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
-                    language: wh.extractedLanguage || '',
-                    missingDetails: wh.extractedMissingDetails || []
-                };
             }
 
             return {
