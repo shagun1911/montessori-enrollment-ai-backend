@@ -254,6 +254,7 @@ router.get('/dashboard', async (req, res) => {
             ],
             callMinutesOverTime,
             topSchoolsByMinutes,
+            recentCalls: formattedCalls,
             recentFollowups: formattedFollowups,
             conversionReasons,
             schoolsNeedingTuning,
