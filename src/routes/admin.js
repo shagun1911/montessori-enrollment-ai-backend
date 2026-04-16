@@ -50,12 +50,55 @@ router.get('/dashboard', async (req, res) => {
         const activeSchools = await School.countDocuments({ status: 'active' });
         const totalCalls = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', ...dateFilter });
         const callsWithSchoolId = await ElevenLabsWebhook.countDocuments({ type: 'post_call_transcription', schoolId: { $exists: true, $ne: null }, ...dateFilter });
+
+        // Calculate month-over-month comparisons
+        const now = new Date();
+        const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+
+        // Schools added this month
+        const schoolsAddedThisMonth = await School.countDocuments({
+            createdAt: { $gte: startOfCurrentMonth }
+        });
+
+        // Calls last month for comparison
+        const callsLastMonth = await ElevenLabsWebhook.countDocuments({
+            type: 'post_call_transcription',
+            received_at: {
+                $gte: startOfLastMonth,
+                $lte: endOfLastMonth
+            }
+        });
+
+        const callsDifference = totalCalls - callsLastMonth;
+        const callsChangePercent = callsLastMonth > 0 ? Math.round((callsDifference / callsLastMonth) * 100) : 0;
         const totalFollowups = await Followup.countDocuments({ ...dateFilter });
         const sentFollowups = await Followup.countDocuments({ status: 'sent', ...dateFilter });
         const totalReferrals = await Referral.countDocuments({ ...dateFilter });
         
-        // New metrics
-        const totalToursBooked = await TourBooking.countDocuments({ ...dateFilter });
+        // New metrics - Create proper date filter for TourBooking (uses createdAt, not received_at)
+        let tourDateFilter = {};
+        if (month) {
+            const [year, monthNum] = month.split('-');
+            tourDateFilter = {
+                createdAt: {
+                    $gte: new Date(year, monthNum - 1, 1),
+                    $lt: new Date(year, monthNum, 1)
+                }
+            };
+        } else if (startDate && endDate) {
+            tourDateFilter = {
+                createdAt: {
+                    $gte: new Date(startDate),
+                    $lte: new Date(endDate)
+                }
+            };
+        }
+        const totalToursBooked = await TourBooking.countDocuments({ ...tourDateFilter });
+        
+        // Conversion rate calculation: (total tours booked / total calls) * 100
+        const conversionRate = totalCalls > 0 ? Math.round((totalToursBooked / totalCalls) * 100) : 0;
         
         // Calculate total call minutes
         const callMinutesAggregation = await ElevenLabsWebhook.aggregate([
@@ -268,6 +311,10 @@ router.get('/dashboard', async (req, res) => {
                 totalReferrals,
                 totalToursBooked,
                 totalCallMinutes: Math.round(totalCallMinutes / 60),
+                schoolsAddedThisMonth,
+                callsDifference,
+                callsChangePercent,
+                conversionRate,
             },
         });
     } catch (err) {
