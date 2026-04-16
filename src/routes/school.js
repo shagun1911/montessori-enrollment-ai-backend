@@ -662,7 +662,8 @@ router.get('/daily-insights', async (req, res) => {
         const toursToProcess = [];
         const enrichedToursMap = new Map();
 
-        await Promise.all(todaysTourDocs.map(async (tour) => {
+        // First, add all already-processed tours to the map
+        todaysTourDocs.forEach(tour => {
             if (tour.aiProcessed) {
                 enrichedToursMap.set(tour._id.toString(), {
                     ...tour,
@@ -670,23 +671,42 @@ router.get('/daily-insights', async (req, res) => {
                     highlights: tour.highlights || '',
                     callSummary: '' // Will be enriched if webhook found
                 });
-                return;
             }
+        });
 
-            const tourPhone = normalizePhone(tour.phone);
-            const linkedWebhook = await ElevenLabsWebhook.findOne({
+        // Collect all phone numbers for unprocessed tours in a single query
+        const unprocessedTours = todaysTourDocs.filter(tour => !tour.aiProcessed);
+        const tourPhones = unprocessedTours.map(tour => normalizePhone(tour.phone)).filter(p => p);
+
+        // Fetch all relevant webhooks in a single query instead of N+1 queries
+        let allRelevantWebhooks = [];
+        if (tourPhones.length > 0) {
+            allRelevantWebhooks = await ElevenLabsWebhook.find({
                 type: 'post_call_transcription',
                 schoolId: schoolObjectId,
-                $and: [
-                    tourPhone ? { 'metadata.phone_call.from_number': { $regex: tourPhone } } : { _id: { $exists: true } }
-                ]
+                'metadata.phone_call.from_number': { $in: tourPhones.map(p => new RegExp(p)) }
             }).sort({ received_at: -1 }).lean();
+        }
+
+        // Create a phone-to-webhook map for efficient lookup
+        const phoneToWebhookMap = new Map();
+        allRelevantWebhooks.forEach(wh => {
+            const webhookPhone = normalizePhone(wh.metadata?.phone_call?.from_number || '');
+            if (webhookPhone && !phoneToWebhookMap.has(webhookPhone)) {
+                phoneToWebhookMap.set(webhookPhone, wh);
+            }
+        });
+
+        // Process unprocessed tours using the pre-fetched webhooks
+        unprocessedTours.forEach(tour => {
+            const tourPhone = normalizePhone(tour.phone);
+            const linkedWebhook = tourPhone ? phoneToWebhookMap.get(tourPhone) : null;
 
             if (linkedWebhook) {
-                const transcriptText = Array.isArray(linkedWebhook.transcript) 
+                const transcriptText = Array.isArray(linkedWebhook.transcript)
                     ? linkedWebhook.transcript.map(t => `${t.role}: ${t.message || t.text}`).join('\n')
                     : '';
-                
+
                 if (transcriptText) {
                     toursToProcess.push({
                         id: tour._id.toString(),
@@ -707,7 +727,7 @@ router.get('/daily-insights', async (req, res) => {
                 // No webhook found
                 enrichedToursMap.set(tour._id.toString(), { ...tour, id: tour._id.toString() });
             }
-        }));
+        });
 
         // Batch process the ones that need it (limit to 5 to prevent slow loading)
         if (toursToProcess.length > 0) {

@@ -35,6 +35,9 @@ const elevenLabsWebhookSchema = new mongoose.Schema({
 // Index for faster lookups
 elevenLabsWebhookSchema.index({ conversation_id: 1, type: 1 });
 elevenLabsWebhookSchema.index({ received_at: -1 });
+// Compound indexes for daily-insights and action-needed queries
+elevenLabsWebhookSchema.index({ type: 1, schoolId: 1, received_at: -1 });
+elevenLabsWebhookSchema.index({ type: 1, schoolId: 1, received_at: -1, tour_booking_detected: 1, actionTaken: 1 });
 
 module.exports = mongoose.model('ElevenLabsWebhook', elevenLabsWebhookSchema);
 
