@@ -38,6 +38,25 @@ const router = express.Router();
 // Apply auth middleware to all school routes
 router.use(authMiddleware, schoolOnly);
 
+function hasStableTagCache(webhookDoc) {
+    return Boolean(
+        webhookDoc
+        && (webhookDoc.ai_processed || webhookDoc.aiProcessed)
+        && Array.isArray(webhookDoc.extractedTags)
+        && webhookDoc.extractedTags.length > 0
+    );
+}
+
+function buildCachedComprehensiveData(webhookDoc) {
+    return {
+        tags: webhookDoc.extractedTags || [],
+        childName: webhookDoc.extractedChildName || webhookDoc.tour_booking_extracted?.childName || '',
+        childAge: webhookDoc.extractedChildAge || webhookDoc.tour_booking_extracted?.childAge || '',
+        language: webhookDoc.extractedLanguage || '',
+        missingDetails: webhookDoc.extractedMissingDetails || []
+    };
+}
+
 // Helper function to format Q&A pairs is now imported from elevenlabs utility
 
 // Helper function to delete a knowledge base document from ElevenLabs
@@ -560,16 +579,9 @@ router.get('/daily-insights', async (req, res) => {
 
                     let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
 
-                    // Use cached comprehensive data if available, otherwise extract
-                    if (wh.aiProcessed && wh.extractedTags && wh.extractedTags.length > 0) {
-                        // Use cached comprehensive data
-                        comprehensiveData = {
-                            tags: wh.extractedTags || [],
-                            childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
-                            childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
-                            language: wh.extractedLanguage || '',
-                            missingDetails: wh.extractedMissingDetails || []
-                        };
+                    // Use stable cached comprehensive data if available, otherwise extract once and persist.
+                    if (hasStableTagCache(wh)) {
+                        comprehensiveData = buildCachedComprehensiveData(wh);
                     } else if (transcriptText) {
                         try {
                             comprehensiveData = await extractTourDetails(transcriptText, {
@@ -604,7 +616,7 @@ router.get('/daily-insights', async (req, res) => {
                             
                             // Cache the extracted data to the webhook document
                             await ElevenLabsWebhook.findByIdAndUpdate(wh._id, {
-                                aiProcessed: true,
+                                ai_processed: true,
                                 extractedTags: comprehensiveData.tags,
                                 extractedChildName: comprehensiveData.childName,
                                 extractedChildAge: comprehensiveData.childAge,
@@ -614,15 +626,8 @@ router.get('/daily-insights', async (req, res) => {
                         } catch (err) {
                             console.error('[DAILY-INSIGHTS] Failed to extract comprehensive data:', err);
                         }
-                    } else if (wh.aiProcessed) {
-                        // Use cached comprehensive data if available
-                        comprehensiveData = {
-                            tags: wh.extractedTags || [],
-                            childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
-                            childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
-                            language: wh.extractedLanguage || '',
-                            missingDetails: wh.extractedMissingDetails || []
-                        };
+                    } else if (wh.ai_processed || wh.aiProcessed) {
+                        comprehensiveData = buildCachedComprehensiveData(wh);
                     }
 
                     return {
@@ -787,6 +792,8 @@ router.get('/daily-insights', async (req, res) => {
                 highlights: enriched.highlights || enriched.notes || '',
                 callSummary: enriched.callSummary || '',
                 reminderSent: enriched.reminderSent || false,
+                tags: Array.isArray(enriched.linkedWebhook?.extractedTags) ? enriched.linkedWebhook.extractedTags : [],
+                language: enriched.linkedWebhook?.extractedLanguage || '',
             };
         });
 
@@ -834,16 +841,9 @@ router.get('/action-needed', async (req, res) => {
 
             let comprehensiveData = { tags: [], childName: '', childAge: '', language: '', missingDetails: [] };
 
-            // Use cached comprehensive data if available, otherwise extract
-            if (wh.aiProcessed && wh.extractedTags && wh.extractedTags.length > 0) {
-                // Use cached comprehensive data
-                comprehensiveData = {
-                    tags: wh.extractedTags || [],
-                    childName: wh.extractedChildName || wh.tour_booking_extracted?.childName || '',
-                    childAge: wh.extractedChildAge || wh.tour_booking_extracted?.childAge || '',
-                    language: wh.extractedLanguage || '',
-                    missingDetails: wh.extractedMissingDetails || []
-                };
+            // Use stable cached comprehensive data if available, otherwise extract once and persist.
+            if (hasStableTagCache(wh)) {
+                comprehensiveData = buildCachedComprehensiveData(wh);
             } else if (transcriptText) {
                 // Extract and cache if no cached data exists
                 try {
@@ -879,7 +879,7 @@ router.get('/action-needed', async (req, res) => {
 
                     // Cache the extracted data to the webhook document
                     await ElevenLabsWebhook.findByIdAndUpdate(wh._id, {
-                        aiProcessed: true,
+                        ai_processed: true,
                         extractedTags: comprehensiveData.tags,
                         extractedChildName: comprehensiveData.childName,
                         extractedChildAge: comprehensiveData.childAge,
