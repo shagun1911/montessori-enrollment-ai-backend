@@ -151,6 +151,7 @@ async function extractTourDetails(transcriptText, existingDetails = {}) {
             purpose: existingDetails.purpose || 'Brief inquiry - insufficient details captured',
             questionsAsked: [],
             notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.',
+            tourTalkingPoints: [],
             tags: ['Partial call'],
             language: '',
             missingDetails: ['Insufficient call duration']
@@ -172,8 +173,11 @@ async function extractTourDetails(transcriptText, existingDetails = {}) {
             childName: extracted.child_name ? (Array.isArray(extracted.child_name) ? extracted.child_name[0] : extracted.child_name) : existingDetails.childName || '',
             childAge: extracted.child_age ? (Array.isArray(extracted.child_age) ? extracted.child_age[0] : extracted.child_age) : existingDetails.childAge || '',
             purpose: extracted.summary || existingDetails.purpose || 'Brief inquiry',
-            questionsAsked: extracted.questions_asked || [],
-            notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : '',
+            questionsAsked: extracted.one_pager?.what_they_asked_about || extracted.questions_asked || [],
+            notes: extracted.one_pager?.tour_talking_points
+                ? extracted.one_pager.tour_talking_points.join('\n')
+                : (extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : ''),
+            tourTalkingPoints: extracted.one_pager?.tour_talking_points || [],
             tags: extracted.tags || [],
             language: extracted.language_spoken || '',
             missingDetails: extracted.missing_details || []
@@ -206,6 +210,7 @@ async function batchExtractTourDetails(tourBatch) {
                 purpose: tour.existingDetails?.purpose || 'Brief inquiry - insufficient details captured',
                 questionsAsked: [],
                 notes: 'Call was too short to extract meaningful insights. Primarily consisted of greetings and basic inquiries.',
+                tourTalkingPoints: [],
                 tags: ['Partial call'],
                 language: '',
                 missingDetails: ['Insufficient call duration']
@@ -232,6 +237,7 @@ async function batchExtractTourDetails(tourBatch) {
                         purpose: tour.existingDetails?.purpose || 'Brief inquiry - processing failed',
                         questionsAsked: [],
                         notes: 'Failed to process transcript with AI',
+                        tourTalkingPoints: [],
                         tags: [],
                         language: '',
                         missingDetails: []
@@ -248,8 +254,11 @@ async function batchExtractTourDetails(tourBatch) {
                     childName: extracted.child_name ? (Array.isArray(extracted.child_name) ? extracted.child_name[0] : extracted.child_name) : tour.existingDetails?.childName || '',
                     childAge: extracted.child_age ? (Array.isArray(extracted.child_age) ? extracted.child_age[0] : extracted.child_age) : tour.existingDetails?.childAge || '',
                     purpose: extracted.summary || tour.existingDetails?.purpose || 'Brief inquiry',
-                    questionsAsked: extracted.questions_asked || [],
-                    notes: extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : '',
+                    questionsAsked: extracted.one_pager?.what_they_asked_about || extracted.questions_asked || [],
+                    notes: extracted.one_pager?.tour_talking_points
+                        ? extracted.one_pager.tour_talking_points.join('\n')
+                        : (extracted.topics_of_interest ? extracted.topics_of_interest.join(', ') : ''),
+                    tourTalkingPoints: extracted.one_pager?.tour_talking_points || [],
                     tags: extracted.tags || [],
                     language: extracted.language_spoken || '',
                     missingDetails: extracted.missing_details || []
@@ -265,6 +274,7 @@ async function batchExtractTourDetails(tourBatch) {
                     purpose: tour.existingDetails?.purpose || 'Brief inquiry - processing error',
                     questionsAsked: [],
                     notes: 'Error occurred during processing',
+                    tourTalkingPoints: [],
                     tags: [],
                     language: '',
                     missingDetails: []
