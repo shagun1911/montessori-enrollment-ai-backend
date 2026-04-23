@@ -3,6 +3,11 @@ const School = require('../models/School');
 const BillingTransaction = require('../models/BillingTransaction');
 const { authMiddleware, schoolOnly } = require('../middleware/auth');
 const { listPlansPublic, getPlanDef, resolvePaypalPlanId, paypalPlansConfigured } = require('../config/billingPlans');
+const {
+    computeTopupUsd,
+    getTopupPricingForClient,
+    validateTopupMinutes,
+} = require('../config/topupPricing');
 
 function formatPayPalApiError(err) {
     const d = err.response?.data;
@@ -51,8 +56,6 @@ router.get('/status', async (req, res) => {
             return res.status(404).json({ error: 'School not found' });
         }
         const plan = school.subscriptionPlanKey ? getPlanDef(school.subscriptionPlanKey) : null;
-        const topupUsd = parseFloat(process.env.PAYPAL_TOPUP_USD || '15', 10);
-        const topupMinutes = parseInt(process.env.PAYPAL_TOPUP_MINUTES || '50', 10);
 
         res.json({
             billingMode: school.billingMode || 'none',
@@ -70,10 +73,7 @@ router.get('/status', async (req, res) => {
                       includedMinutesPerMonth: plan.includedMinutesPerMonth,
                   }
                 : null,
-            topup: {
-                usd: topupUsd,
-                minutes: topupMinutes,
-            },
+            topupPricing: getTopupPricingForClient(),
             paypalPlansConfigured: paypalPlansConfigured({
                 foundingPartner: Boolean(school.foundingPartner),
             }),
@@ -248,8 +248,11 @@ router.post('/onboarding-order', async (req, res) => {
 router.post('/topup-order', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
-        const topupUsd = parseFloat(process.env.PAYPAL_TOPUP_USD || '15', 10);
-        const topupMinutes = parseInt(process.env.PAYPAL_TOPUP_MINUTES || '50', 10);
+        const topupMinutes = parseInt((req.body || {}).minutes, 10);
+        const valid = validateTopupMinutes(topupMinutes);
+        if (!valid.ok) {
+            return res.status(400).json({ error: valid.error });
+        }
 
         const school = await School.findById(schoolId);
         if (!school) {
@@ -259,6 +262,11 @@ router.post('/topup-order', async (req, res) => {
             return res.status(400).json({
                 error: 'Top-up is available for schools with an active metered subscription.',
             });
+        }
+
+        const topupUsd = computeTopupUsd(topupMinutes);
+        if (topupUsd < 0.01) {
+            return res.status(400).json({ error: 'Amount too small.' });
         }
 
         const customId = `school:${school._id.toString()};type:topup;minutes:${topupMinutes}`;
@@ -324,10 +332,7 @@ router.post('/capture-order', async (req, res) => {
         }
 
         if (captureId) {
-            const dup = await BillingTransaction.findOne({
-                paypalSaleId: captureId,
-                type: 'topup',
-            }).lean();
+            const dup = await BillingTransaction.findOne({ paypalSaleId: captureId }).lean();
             if (dup) {
                 const refreshed = await School.findById(schoolId).lean();
                 return res.json({
@@ -338,31 +343,70 @@ router.post('/capture-order', async (req, res) => {
             }
         }
 
-        let minutes = parseInt(process.env.PAYPAL_TOPUP_MINUTES || '50', 10);
-        const m = customId.match(/minutes:(\d+)/);
-        if (m) minutes = parseInt(m[1], 10);
-
         const amount = cap ? parseFloat(cap.amount.value) : 0;
+        const currency = cap?.amount?.currency_code || 'USD';
 
-        await grantMinutes(school._id, minutes, 'topup', { orderId, captureId });
-        await recordTransaction({
-            schoolId: school._id,
-            type: 'topup',
-            amount,
-            currency: cap?.amount?.currency_code || 'USD',
-            status: 'completed',
-            paypalOrderId: orderId,
-            paypalSaleId: captureId,
-            description: `Top-up ${minutes} minutes`,
-            rawEventType: 'capture_order',
-        });
+        if (customId.includes('type:topup')) {
+            let minutes = 0;
+            const m = customId.match(/minutes:(\d+)/);
+            if (m) minutes = parseInt(m[1], 10);
+            if (!minutes || minutes < 1) {
+                return res.status(400).json({ error: 'Invalid top-up minutes on order.' });
+            }
 
-        const refreshed = await School.findById(schoolId).lean();
-        res.json({
-            ok: true,
-            minutesAdded: minutes,
-            minuteBalance: refreshed?.minuteBalance ?? null,
-        });
+            const expectedUsd = computeTopupUsd(minutes);
+            if (Math.abs(amount - expectedUsd) > 0.03) {
+                console.warn('[billing/capture-order] top-up amount mismatch', { minutes, expectedUsd, amount });
+                return res.status(400).json({ error: 'Captured amount does not match this top-up.' });
+            }
+
+            await grantMinutes(school._id, minutes, 'topup', { orderId, captureId });
+            await recordTransaction({
+                schoolId: school._id,
+                type: 'topup',
+                amount,
+                currency,
+                status: 'completed',
+                paypalOrderId: orderId,
+                paypalSaleId: captureId,
+                description: `Top-up ${minutes} minutes`,
+                rawEventType: 'capture_order',
+            });
+
+            const refreshed = await School.findById(schoolId).lean();
+            return res.json({
+                ok: true,
+                minutesAdded: minutes,
+                minuteBalance: refreshed?.minuteBalance ?? null,
+            });
+        }
+
+        if (customId.includes('type:onboarding')) {
+            const planMatch = customId.match(/plan:([^;]+)/);
+            const planKey = planMatch ? planMatch[1] : '';
+            school.onboardingFeePaid = true;
+            await school.save();
+            await recordTransaction({
+                schoolId: school._id,
+                type: 'onboarding',
+                amount,
+                currency,
+                status: 'completed',
+                paypalOrderId: orderId,
+                paypalSaleId: captureId,
+                planKey,
+                description: 'Onboarding fee',
+                rawEventType: 'capture_order',
+            });
+            const refreshed = await School.findById(schoolId).lean();
+            return res.json({
+                ok: true,
+                onboardingPaid: true,
+                minuteBalance: refreshed?.minuteBalance ?? null,
+            });
+        }
+
+        return res.status(400).json({ error: 'Unsupported order for capture.' });
     } catch (err) {
         console.error('[billing/capture-order]', err.response?.data || err.message);
         res.status(500).json({

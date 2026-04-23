@@ -210,9 +210,22 @@ router.post('/', async (req, res) => {
             }
 
             if (customId.includes('type:topup')) {
-                let minutes = parseInt(process.env.PAYPAL_TOPUP_MINUTES || '50', 10);
                 const m = customId.match(/minutes:(\d+)/);
-                if (m) minutes = parseInt(m[1], 10);
+                const minutes = m ? parseInt(m[1], 10) : 0;
+                if (!minutes) {
+                    await recordTransaction({
+                        schoolId: school._id,
+                        type: 'other',
+                        amount,
+                        currency,
+                        status: 'completed',
+                        paypalEventId: eventId,
+                        paypalSaleId: captureId,
+                        description: 'Top-up capture missing minutes in custom_id',
+                        rawEventType: eventType,
+                    });
+                    return res.status(200).json({ received: true });
+                }
                 await grantMinutes(school._id, minutes, 'topup', { captureId });
                 await recordTransaction({
                     schoolId: school._id,
