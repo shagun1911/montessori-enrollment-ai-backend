@@ -141,6 +141,7 @@ async function updateAgentWithKnowledgeBase(
 
     try {
         const url = `${baseUrl}/api/v1/agents/${agentId}/prompt`;
+        const patchStartedAt = new Date().toISOString();
 
         const fullPrompt = `${systemPrompt || ''}\n\n${APPOINTMENT_AGENT_PROMPT}`;
 
@@ -158,14 +159,50 @@ async function updateAgentWithKnowledgeBase(
                 phone_number: humanTransfer.phoneNumber,
                 transfer_type: 'sip_refer'
             }];
+
+            // Keep built-in transfer tool explicitly active so ElevenLabs Tools UI reflects the rule.
+            payload.built_in_tools = {
+                transfer_to_number: {
+                    type: 'system',
+                    name: 'transfer_to_number',
+                    response_timeout_secs: 20,
+                    disable_interruptions: false,
+                    force_pre_tool_speech: false,
+                    pre_tool_speech: 'auto',
+                    assignments: [],
+                    tool_call_sound: null,
+                    tool_call_sound_behavior: 'auto',
+                    tool_error_handling_mode: 'auto',
+                    params: {
+                        system_tool_type: 'transfer_to_number',
+                        transfers: [{
+                            custom_sip_headers: [],
+                            transfer_destination: {
+                                type: 'phone',
+                                phone_number: humanTransfer.phoneNumber
+                            },
+                            transfer_type: 'sip_refer',
+                            post_dial_digits: null,
+                            phone_number: humanTransfer.phoneNumber,
+                            condition: humanTransfer.condition
+                        }],
+                        enable_client_message: true
+                    }
+                }
+            };
         } else {
             payload.human_transfer_rules = [];
+            payload.built_in_tools = {
+                transfer_to_number: null
+            };
         }
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
+        console.log(`[Agent PATCH] HIT at ${patchStartedAt}`);
         console.log(`[Agent PATCH] Request URL: ${url}`);
         console.log(`[Agent PATCH] Agent ID: ${agentId}`);
         console.log(`[Agent PATCH] Tool IDs:`, payload.tool_ids);
+        console.log('[Agent PATCH] built_in_tools.transfer_to_number enabled:', Boolean(payload?.built_in_tools?.transfer_to_number));
         console.log(`[Agent PATCH] Payload (full):`, JSON.stringify(payload, null, 2));
         console.log('[Agent PATCH] ====================================');
 
@@ -176,7 +213,64 @@ async function updateAgentWithKnowledgeBase(
             }
         });
 
+        // ElevenLabs may accept human_transfer_rules on /prompt but still keep built-in transfer tool disabled.
+        // Ensure transfer_to_number is explicitly enabled via /agents endpoint when human transfer is ON.
+        if (humanTransfer?.enabled && humanTransfer?.condition && humanTransfer?.phoneNumber) {
+            try {
+                const ensureToolUrl = `${baseUrl}/api/v1/agents/${agentId}`;
+                const ensureToolPayload = {
+                    conversation_config: {
+                        agent: {
+                            prompt: {
+                                built_in_tools: {
+                                    transfer_to_number: {
+                                        type: 'system',
+                                        name: 'transfer_to_number',
+                                        response_timeout_secs: 20,
+                                        disable_interruptions: false,
+                                        force_pre_tool_speech: false,
+                                        pre_tool_speech: 'auto',
+                                        assignments: [],
+                                        tool_call_sound: null,
+                                        tool_call_sound_behavior: 'auto',
+                                        tool_error_handling_mode: 'auto',
+                                        params: {
+                                            system_tool_type: 'transfer_to_number',
+                                            transfers: [{
+                                                custom_sip_headers: [],
+                                                transfer_destination: {
+                                                    type: 'phone',
+                                                    phone_number: humanTransfer.phoneNumber
+                                                },
+                                                transfer_type: 'sip_refer',
+                                                post_dial_digits: null,
+                                                phone_number: humanTransfer.phoneNumber,
+                                                condition: humanTransfer.condition
+                                            }],
+                                            enable_client_message: true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                const ensureToolResponse = await axios.patch(ensureToolUrl, ensureToolPayload, {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(process.env.ELEVENLABS_API_KEY && { 'Authorization': `Bearer ${process.env.ELEVENLABS_API_KEY}` })
+                    }
+                });
+                console.log('[Agent PATCH] transfer_to_number ensured via /agents endpoint');
+                console.log('[Agent PATCH] /agents ensure status:', ensureToolResponse.status);
+            } catch (ensureErr) {
+                console.error('[Agent PATCH] Failed to ensure transfer_to_number via /agents endpoint:', ensureErr?.response?.status, ensureErr?.response?.data || ensureErr?.message);
+            }
+        }
+
         console.log('[Agent PATCH] ========== PATCH RESPONSE ==========');
+        console.log(`[Agent PATCH] SUCCESS at ${new Date().toISOString()}`);
         console.log(`[Agent PATCH] Response Status: ${response.status}`);
         console.log(`[Agent PATCH] Response Headers:`, JSON.stringify(response.headers, null, 2));
         console.log(`[Agent PATCH] Response Data:`, JSON.stringify(response.data, null, 2));
@@ -184,6 +278,7 @@ async function updateAgentWithKnowledgeBase(
         console.log('[Agent PATCH] =====================================');
         return response.data;
     } catch (err) {
+        console.error(`[Agent PATCH] FAILED at ${new Date().toISOString()}`);
         if (err?.response?.status !== 404) {
             console.error(`[Agent PATCH] Failed to update agent`);
             console.error(`[Agent PATCH] Error Status:`, err.response?.status);
@@ -1609,14 +1704,6 @@ router.put('/settings', async (req, res) => {
 
         const scriptChanged = script !== undefined && script !== oldScript;
         const systemPromptChanged = systemPrompt !== undefined && systemPrompt !== oldSystemPrompt;
-        const humanTransferChanged =
-            (enableHumanTransfer !== undefined && Boolean(enableHumanTransfer) !== oldEnableHumanTransfer)
-            || (humanTransferCondition !== undefined && String(humanTransferCondition || '').trim() !== oldHumanTransferCondition)
-            || (humanTransferPhoneNumber !== undefined && String(humanTransferPhoneNumber || '').trim() !== oldHumanTransferPhoneNumber);
-
-        if (school.enableHumanTransfer && (!school.humanTransferCondition || !school.humanTransferPhoneNumber)) {
-            return res.status(400).json({ error: 'Condition and phone number are required when Human Transfer is enabled.' });
-        }
 
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
@@ -1630,9 +1717,26 @@ router.put('/settings', async (req, res) => {
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (enableHumanTransfer !== undefined) school.enableHumanTransfer = Boolean(enableHumanTransfer);
         if (humanTransferCondition !== undefined) school.humanTransferCondition = String(humanTransferCondition || '').trim();
-        if (humanTransferPhoneNumber !== undefined) school.humanTransferPhoneNumber = String(humanTransferPhoneNumber || '').trim();
+        if (humanTransferPhoneNumber !== undefined) {
+            const normalizedTransferPhone = normalizePhone(String(humanTransferPhoneNumber || ''));
+            school.humanTransferPhoneNumber = normalizedTransferPhone || '';
+        }
         if (tourConfirmationEmailTemplate !== undefined) school.tourConfirmationEmailTemplate = tourConfirmationEmailTemplate;
         if (tourReminderSmsTemplate !== undefined) school.tourReminderSmsTemplate = tourReminderSmsTemplate;
+
+        // Validate using the latest values (after applying request body fields).
+        if (school.enableHumanTransfer && (!school.humanTransferCondition || !school.humanTransferPhoneNumber)) {
+            return res.status(400).json({ error: 'Condition and phone number are required when Human Transfer is enabled.' });
+        }
+
+        // If human transfer fields are present in payload, always sync to ElevenLabs to avoid UI/API drift.
+        const humanTransferChanged =
+            enableHumanTransfer !== undefined
+            || humanTransferCondition !== undefined
+            || humanTransferPhoneNumber !== undefined
+            || school.enableHumanTransfer !== oldEnableHumanTransfer
+            || (school.humanTransferCondition || '') !== oldHumanTransferCondition
+            || (school.humanTransferPhoneNumber || '') !== oldHumanTransferPhoneNumber;
 
         // Check if qaPairs changed
         let qaPairsChanged = false;
@@ -1695,6 +1799,13 @@ router.put('/settings', async (req, res) => {
         if (qaPairsChanged || scriptChanged || systemPromptChanged || humanTransferChanged) {
             // Prefer school-specific agent ID when set; fall back to global AGENT_ID
             const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
+            console.log('[PUT /settings] Agent sync inputs:', {
+                schoolId: String(school._id),
+                agentId: agentId || null,
+                humanTransferEnabled: Boolean(school.enableHumanTransfer),
+                humanTransferCondition: school.humanTransferCondition || '',
+                humanTransferPhoneNumber: school.humanTransferPhoneNumber || ''
+            });
             if (agentId) {
                 if (!process.env.ELEVENLABS_API_URL) {
                     console.warn('[PUT /settings] ELEVENLABS_API_URL not set — skipping agent PATCH');
