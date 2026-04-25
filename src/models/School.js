@@ -32,6 +32,10 @@ const schoolSchema = new mongoose.Schema({
     // Tour confirmation templates
     tourConfirmationEmailTemplate: { type: String, default: 'Dear {parent_name},\n\nYour tour at {school_name} has been scheduled for {tour_date}.\n\nLocation: {school_address}\n\nWe look forward to seeing you!\n\nWarm regards,\n{school_name}' },
     tourReminderSmsTemplate: { type: String, default: 'Hi {parent_name}, this is a reminder for your tour at {school_name} tomorrow, {tour_date}. See you then!' },
+    // Human transfer
+    enableHumanTransfer: { type: Boolean, default: false },
+    humanTransferCondition: { type: String, default: '' },
+    humanTransferPhoneNumber: { type: String, default: '' },
     // Analytics
     wordCloud: { type: Array, default: [] },
     // Billing / PayPal (metered minutes when billingMode === 'metered')

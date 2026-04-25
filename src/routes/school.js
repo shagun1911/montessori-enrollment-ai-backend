@@ -120,7 +120,14 @@ async function patchAgentKnowledgeBaseOnly(agentId, documentId) {
 }
 
 // Helper function to update agent with knowledge base ID (full config: first_message, prompt, knowledge_base_ids, tool_ids)
-async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt, knowledgeBaseId, toolIds = []) {
+async function updateAgentWithKnowledgeBase(
+    agentId,
+    firstMessage,
+    systemPrompt,
+    knowledgeBaseId,
+    toolIds = [],
+    humanTransfer = { enabled: false, condition: '', phoneNumber: '' }
+) {
     const baseUrl = process.env.ELEVENLABS_API_URL;
     if (!baseUrl) {
         console.warn('[Agent PATCH] ELEVENLABS_API_URL not configured, skipping agent update');
@@ -142,7 +149,18 @@ async function updateAgentWithKnowledgeBase(agentId, firstMessage, systemPrompt,
             knowledge_base_ids: knowledgeBaseId && knowledgeBaseId.trim() ? [knowledgeBaseId] : [],
             language: 'en',
             system_prompt: fullPrompt,
+            enable_human_transfer: Boolean(humanTransfer?.enabled),
         };
+
+        if (humanTransfer?.enabled && humanTransfer?.condition && humanTransfer?.phoneNumber) {
+            payload.human_transfer_rules = [{
+                condition: humanTransfer.condition,
+                phone_number: humanTransfer.phoneNumber,
+                transfer_type: 'sip_refer'
+            }];
+        } else {
+            payload.human_transfer_rules = [];
+        }
 
         console.log('[Agent PATCH] ========== PATCH REQUEST ==========');
         console.log(`[Agent PATCH] Request URL: ${url}`);
@@ -1518,6 +1536,9 @@ router.get('/settings', async (req, res) => {
             preferredCalendar: school.preferredCalendar || 'google',
             preferredEmailProvider: school.preferredEmailProvider || 'google',
             elevenlabsAgentId: school.elevenlabsAgentId || '',
+            enableHumanTransfer: Boolean(school.enableHumanTransfer),
+            humanTransferCondition: school.humanTransferCondition || '',
+            humanTransferPhoneNumber: school.humanTransferPhoneNumber || '',
             tourConfirmationEmailTemplate: school.tourConfirmationEmailTemplate || '',
             tourReminderSmsTemplate: school.tourReminderSmsTemplate || '',
             googleConnected,
@@ -1553,13 +1574,17 @@ router.put('/settings', async (req, res) => {
             businessHoursStart, businessHoursEnd,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
             qaPairs, preferredCalendar, preferredEmailProvider, adminEmail, elevenlabsAgentId,
-            tourConfirmationEmailTemplate, tourReminderSmsTemplate
+            tourConfirmationEmailTemplate, tourReminderSmsTemplate,
+            enableHumanTransfer, humanTransferCondition, humanTransferPhoneNumber
         } = req.body;
 
         // Capture old values BEFORE overwriting (for change detection)
         const oldAddress = school.address;
         const oldScript = school.script;
         const oldSystemPrompt = school.systemPrompt;
+        const oldEnableHumanTransfer = Boolean(school.enableHumanTransfer);
+        const oldHumanTransferCondition = school.humanTransferCondition || '';
+        const oldHumanTransferPhoneNumber = school.humanTransferPhoneNumber || '';
 
         if (name !== undefined) school.name = name;
         if (address !== undefined) school.address = address;
@@ -1584,6 +1609,14 @@ router.put('/settings', async (req, res) => {
 
         const scriptChanged = script !== undefined && script !== oldScript;
         const systemPromptChanged = systemPrompt !== undefined && systemPrompt !== oldSystemPrompt;
+        const humanTransferChanged =
+            (enableHumanTransfer !== undefined && Boolean(enableHumanTransfer) !== oldEnableHumanTransfer)
+            || (humanTransferCondition !== undefined && String(humanTransferCondition || '').trim() !== oldHumanTransferCondition)
+            || (humanTransferPhoneNumber !== undefined && String(humanTransferPhoneNumber || '').trim() !== oldHumanTransferPhoneNumber);
+
+        if (school.enableHumanTransfer && (!school.humanTransferCondition || !school.humanTransferPhoneNumber)) {
+            return res.status(400).json({ error: 'Condition and phone number are required when Human Transfer is enabled.' });
+        }
 
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
@@ -1595,6 +1628,9 @@ router.put('/settings', async (req, res) => {
         if (preferredEmailProvider !== undefined) school.preferredEmailProvider = preferredEmailProvider;
         if (adminEmail !== undefined) school.adminEmail = adminEmail;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
+        if (enableHumanTransfer !== undefined) school.enableHumanTransfer = Boolean(enableHumanTransfer);
+        if (humanTransferCondition !== undefined) school.humanTransferCondition = String(humanTransferCondition || '').trim();
+        if (humanTransferPhoneNumber !== undefined) school.humanTransferPhoneNumber = String(humanTransferPhoneNumber || '').trim();
         if (tourConfirmationEmailTemplate !== undefined) school.tourConfirmationEmailTemplate = tourConfirmationEmailTemplate;
         if (tourReminderSmsTemplate !== undefined) school.tourReminderSmsTemplate = tourReminderSmsTemplate;
 
@@ -1656,7 +1692,7 @@ router.put('/settings', async (req, res) => {
         }
 
         // Consolidated Agent Update: If Q&A, first message, or system prompt changed, push FULL payload
-        if (qaPairsChanged || scriptChanged || systemPromptChanged) {
+        if (qaPairsChanged || scriptChanged || systemPromptChanged || humanTransferChanged) {
             // Prefer school-specific agent ID when set; fall back to global AGENT_ID
             const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
             if (agentId) {
@@ -1669,7 +1705,12 @@ router.put('/settings', async (req, res) => {
                             school.script || '',
                             school.systemPrompt || '',
                             school.knowledgeBaseDocumentId || '',
-                            school.toolIds || []
+                            school.toolIds || [],
+                            {
+                                enabled: Boolean(school.enableHumanTransfer),
+                                condition: school.humanTransferCondition || '',
+                                phoneNumber: school.humanTransferPhoneNumber || ''
+                            }
                         );
                         console.log('[PUT /settings] Agent updated with full payload (KB and/or Persona changes)');
                     } catch (err) {
