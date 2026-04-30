@@ -1615,10 +1615,7 @@ router.get('/settings', async (req, res) => {
             timezone: 'America/Chicago', // Forced global CST
             aiNumber: school.aiNumber || '',
             routingNumber: school.routingNumber || '',
-            escalationNumber: school.escalationNumber || '',
             language: school.language || 'en',
-            script: school.script || '',
-            systemPrompt: school.systemPrompt || '',
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
             smsAutoFollowup: school.smsAutoFollowup || false,
@@ -1665,7 +1662,7 @@ router.put('/settings', async (req, res) => {
         }
 
         const {
-            name, address, timezone, aiNumber, routingNumber, escalationNumber, language, script, systemPrompt,
+            name, address, timezone, aiNumber, routingNumber, language,
             businessHoursStart, businessHoursEnd,
             smsAutoFollowup, emailAutoFollowup, smsTemplate, emailTemplate,
             qaPairs, preferredCalendar, preferredEmailProvider, adminEmail, elevenlabsAgentId,
@@ -1675,8 +1672,6 @@ router.put('/settings', async (req, res) => {
 
         // Capture old values BEFORE overwriting (for change detection)
         const oldAddress = school.address;
-        const oldScript = school.script;
-        const oldSystemPrompt = school.systemPrompt;
         const oldEnableHumanTransfer = Boolean(school.enableHumanTransfer);
         const oldHumanTransferCondition = school.humanTransferCondition || '';
         const oldHumanTransferPhoneNumber = school.humanTransferPhoneNumber || '';
@@ -1697,13 +1692,7 @@ router.put('/settings', async (req, res) => {
         // Apply manually supplied timezone (overrides auto-detected)
         if (timezone !== undefined) school.timezone = timezone;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
-        if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
         if (language !== undefined) school.language = language;
-        if (script !== undefined) school.script = script;
-        if (systemPrompt !== undefined) school.systemPrompt = systemPrompt;
-
-        const scriptChanged = script !== undefined && script !== oldScript;
-        const systemPromptChanged = systemPrompt !== undefined && systemPrompt !== oldSystemPrompt;
 
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
@@ -1796,7 +1785,7 @@ router.put('/settings', async (req, res) => {
         }
 
         // Consolidated Agent Update: If Q&A, first message, or system prompt changed, push FULL payload
-        if (qaPairsChanged || scriptChanged || systemPromptChanged || humanTransferChanged) {
+        if (qaPairsChanged || humanTransferChanged) {
             // Prefer school-specific agent ID when set; fall back to global AGENT_ID
             const agentId = (school.elevenlabsAgentId && school.elevenlabsAgentId.trim()) || process.env.AGENT_ID || null;
             console.log('[PUT /settings] Agent sync inputs:', {

@@ -16,7 +16,7 @@ const AiNumberRequest = require('../models/AiNumberRequest');
 const BillingTransaction = require('../models/BillingTransaction');
 const MinuteLedger = require('../models/MinuteLedger');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
-const { importSipTrunk, deletePhoneNumber, updatePhoneNumber } = require('../utils/elevenlabs');
+const { importSipTrunk, deletePhoneNumber, updatePhoneNumber, patchAgentPrompt, APPOINTMENT_AGENT_PROMPT } = require('../utils/elevenlabs');
 
 const router = express.Router();
 
@@ -368,6 +368,9 @@ router.get('/schools', async (req, res) => {
                     address: s.address,
                     aiNumber: s.aiNumber,
                     routingNumber: s.routingNumber,
+                    escalationNumber: s.escalationNumber || '',
+                    script: s.script || '',
+                    systemPrompt: s.systemPrompt || '',
                     elevenlabsAgentId: s.elevenlabsAgentId,
                     status: s.status,
                     language: s.language,
@@ -627,7 +630,20 @@ router.get('/billing/minutes/:schoolId', async (req, res) => {
 router.put('/schools/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, address, aiNumber, routingNumber, elevenlabsAgentId, status, foundingPartner, minuteBalance, billingMode } = req.body;
+        const {
+            name,
+            address,
+            aiNumber,
+            routingNumber,
+            escalationNumber,
+            script,
+            systemPrompt,
+            elevenlabsAgentId,
+            status,
+            foundingPartner,
+            minuteBalance,
+            billingMode
+        } = req.body;
 
         const school = await School.findById(id);
         if (!school) {
@@ -647,6 +663,9 @@ router.put('/schools/:id', async (req, res) => {
         }
         if (aiNumber !== undefined) school.aiNumber = aiNumber;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
+        if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
+        if (script !== undefined) school.script = script;
+        if (systemPrompt !== undefined) school.systemPrompt = systemPrompt;
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (status !== undefined) school.status = status;
         if (foundingPartner !== undefined) school.foundingPartner = Boolean(foundingPartner);
@@ -847,6 +866,58 @@ router.post('/schools/:id/assign-number', async (req, res) => {
         });
     } catch (err) {
         console.error('Assign Phone Number overall error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/admin/schools/:id/agent-prompt - Update first message/system prompt and sync ElevenLabs
+router.post('/schools/:id/agent-prompt', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { script, systemPrompt } = req.body || {};
+
+        const school = await School.findById(id);
+        if (!school) {
+            return res.status(404).json({ error: 'School not found' });
+        }
+
+        const nextScript = script !== undefined ? String(script) : String(school.script || '');
+        const nextSystemPrompt = systemPrompt !== undefined ? String(systemPrompt) : String(school.systemPrompt || '');
+        const agentId = (school.elevenlabsAgentId || '').trim();
+
+        if (!agentId) {
+            return res.status(400).json({ error: 'This school has no ElevenLabs Agent ID configured.' });
+        }
+
+        const fullPrompt = `${nextSystemPrompt}\n\n${APPOINTMENT_AGENT_PROMPT}`;
+        const patchPayload = {
+            first_message: nextScript,
+            system_prompt: fullPrompt,
+            language: 'en',
+            knowledge_base_ids: school.knowledgeBaseDocumentId ? [school.knowledgeBaseDocumentId] : [],
+            enable_human_transfer: Boolean(school.enableHumanTransfer),
+        };
+
+        if (school.enableHumanTransfer && school.humanTransferCondition && school.humanTransferPhoneNumber) {
+            patchPayload.human_transfer_rules = [{
+                condition: school.humanTransferCondition,
+                phone_number: school.humanTransferPhoneNumber,
+                transfer_type: 'sip_refer',
+            }];
+        }
+
+        const patched = await patchAgentPrompt(agentId, patchPayload);
+        if (!patched) {
+            return res.status(502).json({ error: 'Failed to patch ElevenLabs agent prompt. Check server logs for API error details.' });
+        }
+
+        school.script = nextScript;
+        school.systemPrompt = nextSystemPrompt;
+        await school.save();
+
+        res.json({ success: true, message: 'Agent prompt updated successfully.' });
+    } catch (err) {
+        console.error('Admin agent prompt update error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
