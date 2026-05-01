@@ -6,6 +6,7 @@ const School = require('../models/School');
 const CallLog = require('../models/CallLog');
 const Integration = require('../models/Integration');
 const Followup = require('../models/Followup');
+const BillingTransaction = require('../models/BillingTransaction');
 const FormQuestion = require('../models/FormQuestion');
 const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
@@ -25,6 +26,7 @@ const {
     createSchoolAgent,
     APPOINTMENT_AGENT_PROMPT
 } = require('../utils/elevenlabs');
+const { getPlanDef } = require('../config/billingPlans');
 const {
     generateWordCloud,
     extractTourDetails
@@ -299,7 +301,9 @@ router.get('/dashboard', async (req, res) => {
             return res.status(400).json({ error: 'No school associated with this user' });
         }
 
-        const school = await School.findById(schoolId).select('aiNumber adminEmail').lean();
+        const school = await School.findById(schoolId)
+            .select('aiNumber adminEmail subscriptionPlanKey subscriptionStatus billingMode paypalSubscriptionId')
+            .lean();
 
         // Get admin email notifications scoped to this school
         let adminEmailNotifications = [];
@@ -343,6 +347,8 @@ router.get('/dashboard', async (req, res) => {
             schoolWebhooks,
             callLogEntries,
             actualToursBooked,
+            connectedCalendarCount,
+            latestPaidPlanTx,
         ] = await Promise.all([
             Followup.find(adminEmailQuery)
                 .sort({ createdAt: -1 })
@@ -406,10 +412,24 @@ router.get('/dashboard', async (req, res) => {
                 .limit(500)
                 .lean(),
             TourBooking.find({ schoolId })
-                .select('phone parentName childName')
+                .select('phone parentName childName calendarProvider scheduledAt')
                 .sort({ createdAt: 1 })
                 .lean(),
+            Integration.countDocuments({
+                schoolId,
+                connected: true,
+                type: { $in: ['google', 'outlook'] }
+            }),
+            BillingTransaction.findOne({
+                schoolId: schoolObjectId,
+                type: { $in: ['subscription_payment', 'subscription_activated'] },
+                planKey: { $in: ['starter', 'growth', 'full_enrollment'] },
+            })
+                .select('planKey createdAt')
+                .sort({ createdAt: -1 })
+                .lean(),
         ]);
+        const hasConnectedCalendar = connectedCalendarCount > 0;
 
         // Create a lookup map for parent names based on normalized phone numbers
         const parentNameMap = new Map();
@@ -442,6 +462,9 @@ router.get('/dashboard', async (req, res) => {
                 ? new Date(wh.metadata.start_time_unix_secs * 1000)
                 : wh.received_at;
 
+            // Only show "Tour booked" on dashboard when school has a connected calendar.
+            const bookingConfirmed = hasConnectedCalendar && Boolean(wh.tour_booking_detected);
+
             return {
                 id: wh._id.toString(),
                 conversationId: wh.conversation_id,
@@ -455,8 +478,8 @@ router.get('/dashboard', async (req, res) => {
                 recordingUrl: `${backendUrl}/api/school/calls/${wh.conversation_id}/audio?token=${userToken}`,
                 callType: 'inquiry',
                 summary: wh.summary || '',
-                tourBookingDetected: wh.tour_booking_detected || false,
-                tourBookingDate: wh.tour_booking_date || null,
+                tourBookingDetected: bookingConfirmed,
+                tourBookingDate: bookingConfirmed ? (wh.tour_booking_date || null) : null,
                 aiProcessed: wh.ai_processed || false
             };
         });
@@ -505,6 +528,28 @@ router.get('/dashboard', async (req, res) => {
         const calls = Array.from(allCallsMap.values()).sort((a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
+
+        const schoolPlanDef = school?.subscriptionPlanKey
+            ? getPlanDef(school.subscriptionPlanKey)
+            : null;
+        const txPlanDef = latestPaidPlanTx?.planKey
+            ? getPlanDef(latestPaidPlanTx.planKey)
+            : null;
+        const planDef = schoolPlanDef || txPlanDef || null;
+        // Treat schools as paid when they have a valid plan and either:
+        // - subscription is active, or
+        // - billing mode is metered, or
+        // - a PayPal subscription id is present (some records lag status sync), or
+        // - recent paid billing transactions show a valid paid tier.
+        const hasPaidPlan = Boolean(planDef) && (
+            school?.subscriptionStatus === 'active'
+            || school?.billingMode === 'metered'
+            || Boolean(String(school?.paypalSubscriptionId || '').trim())
+            || Boolean(latestPaidPlanTx?.planKey)
+        );
+        const includedMinutesPerMonth = hasPaidPlan
+            ? Number(planDef.includedMinutesPerMonth) || 2
+            : 2;
 
         // Filter calls to the selected period
         const periodCalls = calls.filter(c => new Date(c.timestamp) >= periodStart);
@@ -588,8 +633,12 @@ router.get('/dashboard', async (req, res) => {
             metrics: [
                 { label: 'Total Calls', value: totalCalls, icon: 'PhoneCall' },
                 { label: 'Action Needed', value: actionNeeded, icon: 'AlertTriangle' },
-                { label: 'Tours Booked', value: actualToursBooked.filter(t => t.scheduledAt >= periodStart).length, icon: 'Calendar' },
-                { label: 'Minutes Consumed', value: `${allTimeMinutes} / 600`, ticker: true, icon: 'Activity' },
+                {
+                    label: 'Tours Booked',
+                    value: actualToursBooked.filter(t => t.scheduledAt >= periodStart && Boolean(t.calendarProvider)).length,
+                    icon: 'Calendar'
+                },
+                { label: 'Minutes Consumed', value: `${allTimeMinutes} / ${includedMinutesPerMonth}`, ticker: true, icon: 'Activity' },
                 { label: 'Average Call Length', value: avgCallLengthFormatted, icon: 'Clock' },
             ],
             chartData,
@@ -1608,6 +1657,10 @@ router.get('/settings', async (req, res) => {
         const googleConnected = integrations.some(i => i.type === 'google');
         const outlookConnected = integrations.some(i => i.type === 'outlook');
 
+        const normalizedLanguage = ['EN', 'ES'].includes(String(school.language || '').toUpperCase())
+            ? String(school.language || '').toUpperCase()
+            : 'EN';
+
         res.json({
             id: school._id.toString(),
             name: school.name,
@@ -1615,7 +1668,7 @@ router.get('/settings', async (req, res) => {
             timezone: 'America/Chicago', // Forced global CST
             aiNumber: school.aiNumber || '',
             routingNumber: school.routingNumber || '',
-            language: school.language || 'en',
+            language: normalizedLanguage,
             businessHoursStart: school.businessHoursStart || '09:00',
             businessHoursEnd: school.businessHoursEnd || '17:00',
             smsAutoFollowup: school.smsAutoFollowup || false,
@@ -1692,7 +1745,12 @@ router.put('/settings', async (req, res) => {
         // Apply manually supplied timezone (overrides auto-detected)
         if (timezone !== undefined) school.timezone = timezone;
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
-        if (language !== undefined) school.language = language;
+        if (language !== undefined) {
+            const normalizedLanguage = String(language || '').trim().toUpperCase();
+            if (['EN', 'ES'].includes(normalizedLanguage)) {
+                school.language = normalizedLanguage;
+            }
+        }
 
         if (businessHoursStart !== undefined) school.businessHoursStart = businessHoursStart;
         if (businessHoursEnd !== undefined) school.businessHoursEnd = businessHoursEnd;
@@ -1702,7 +1760,7 @@ router.put('/settings', async (req, res) => {
         if (emailTemplate !== undefined) school.emailTemplate = emailTemplate;
         if (preferredCalendar !== undefined) school.preferredCalendar = preferredCalendar;
         if (preferredEmailProvider !== undefined) school.preferredEmailProvider = preferredEmailProvider;
-        if (adminEmail !== undefined) school.adminEmail = adminEmail;
+        if (adminEmail !== undefined) school.adminEmail = String(adminEmail || '').trim();
         if (elevenlabsAgentId !== undefined) school.elevenlabsAgentId = elevenlabsAgentId;
         if (enableHumanTransfer !== undefined) school.enableHumanTransfer = Boolean(enableHumanTransfer);
         if (humanTransferCondition !== undefined) school.humanTransferCondition = String(humanTransferCondition || '').trim();
@@ -1835,7 +1893,9 @@ router.put('/settings', async (req, res) => {
 
         res.json({
             message: 'Settings updated successfully',
-            qaPairsCount: school.qaPairs.length
+            qaPairsCount: school.qaPairs.length,
+            adminEmail: school.adminEmail || '',
+            language: school.language || 'EN',
         });
     } catch (err) {
         console.error('[PUT /settings] Error:', err);

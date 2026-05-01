@@ -4,6 +4,7 @@
  */
 
 const PLAN_ORDER = ['starter', 'growth', 'full_enrollment', 'demo'];
+const PUBLIC_PLAN_ORDER = PLAN_ORDER.filter((k) => k !== 'demo');
 
 const PLAN_DEFS = {
     starter: {
@@ -54,7 +55,7 @@ function getPlanDef(planKey) {
 }
 
 function listPlansPublic() {
-    return PLAN_ORDER.map((k) => {
+    return PUBLIC_PLAN_ORDER.map((k) => {
         const p = PLAN_DEFS[k];
         return {
             key: p.key,
@@ -93,6 +94,7 @@ function paypalPlansConfigured({ foundingPartner } = {}) {
 
 module.exports = {
     PLAN_ORDER,
+    PUBLIC_PLAN_ORDER,
     PLAN_DEFS,
     getPlanDef,
     listPlansPublic,
