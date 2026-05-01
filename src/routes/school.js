@@ -302,7 +302,7 @@ router.get('/dashboard', async (req, res) => {
         }
 
         const school = await School.findById(schoolId)
-            .select('aiNumber adminEmail subscriptionPlanKey subscriptionStatus billingMode paypalSubscriptionId')
+            .select('aiNumber aiNumberAssignedAt adminEmail subscriptionPlanKey subscriptionStatus billingMode paypalSubscriptionId')
             .lean();
 
         // Get admin email notifications scoped to this school
@@ -365,7 +365,23 @@ router.get('/dashboard', async (req, res) => {
                         const bennyDb = mongoose.connection.useDb('benny');
                         const collection = bennyDb.collection('voiceAI');
 
-                        const rawLogs = await collection.find({ participant_id: participantId })
+                        let voiceAiQuery = { participant_id: participantId };
+                        if (school?.aiNumberAssignedAt) {
+                            const since = new Date(school.aiNumberAssignedAt);
+                            voiceAiQuery = {
+                                $and: [
+                                    { participant_id: participantId },
+                                    {
+                                        $or: [
+                                            { created_at: { $gte: since } },
+                                            { timestamp: { $gte: since } },
+                                        ],
+                                    },
+                                ],
+                            };
+                        }
+
+                        const rawLogs = await collection.find(voiceAiQuery)
                             .sort({ created_at: -1 })
                             .toArray();
 
@@ -388,19 +404,10 @@ router.get('/dashboard', async (req, res) => {
                 }
                 return voiceAiCallsInner;
             })(),
-            // Search by both discrete schoolId (best) and unique AI number (resilient fallback)
-            // Increased limit to 500 to capture more historical data
+            // Scope strictly by school — phone-number fallback matched prior tenants when numbers were reassigned.
             ElevenLabsWebhook.find({
                 type: 'post_call_transcription',
-                $or: [
-                    { schoolId: schoolObjectId },
-                    {
-                        'metadata.phone_call.agent_number': { $regex: schoolAiNumber || 'nevermatch' },
-                    },
-                    {
-                        'metadata.phone_call.to_number': { $regex: schoolAiNumber || 'nevermatch' }
-                    }
-                ]
+                schoolId: schoolObjectId,
             })
                 // Omit raw_payload (large debug blob) and audio; dashboard only needs metadata + transcript + summary fields
                 .select('-raw_payload -audio_base64')
@@ -1333,7 +1340,7 @@ router.post('/wordcloud/generate', async (req, res) => {
 router.get('/call-logs', async (req, res) => {
     try {
         const schoolId = req.user.schoolId;
-        const school = await School.findById(schoolId).select('aiNumber elevenlabsAgentId').lean();
+        const school = await School.findById(schoolId).select('aiNumber aiNumberAssignedAt elevenlabsAgentId').lean();
 
         if (!school) {
             return res.status(404).json({ error: 'School not found' });
@@ -1360,11 +1367,34 @@ router.get('/call-logs', async (req, res) => {
                 const bennyDb = mongoose.connection.useDb('benny');
                 const collection = bennyDb.collection('voiceAI');
 
-                const schoolLogs = await collection.find({ participant_id: participantId }).project({ session_id: 1 }).toArray();
+                let voiceSessionQuery = { participant_id: participantId };
+                if (school.aiNumberAssignedAt) {
+                    const since = new Date(school.aiNumberAssignedAt);
+                    voiceSessionQuery = {
+                        $and: [
+                            { participant_id: participantId },
+                            {
+                                $or: [
+                                    { created_at: { $gte: since } },
+                                    { timestamp: { $gte: since } },
+                                ],
+                            },
+                        ],
+                    };
+                }
+
+                const schoolLogs = await collection.find(voiceSessionQuery).project({ session_id: 1 }).toArray();
                 const sessionIds = [...new Set(schoolLogs.map(l => l.session_id))];
 
                 if (sessionIds.length > 0) {
-                    const allLogs = await collection.find({ session_id: { $in: sessionIds } }).sort({ created_at: -1 }).toArray();
+                    let allLogs = await collection.find({ session_id: { $in: sessionIds } }).sort({ created_at: -1 }).toArray();
+                    if (school.aiNumberAssignedAt) {
+                        const sinceMs = new Date(school.aiNumberAssignedAt).getTime();
+                        allLogs = allLogs.filter((log) => {
+                            const t = log.created_at || log.timestamp;
+                            return t && new Date(t).getTime() >= sinceMs;
+                        });
+                    }
                     const sessionsMap = {};
                     allLogs.forEach(log => {
                         const sid = log.session_id;
@@ -1474,22 +1504,14 @@ router.get('/calls/:conversationId/audio', async (req, res) => {
         const audioWebhook = await ElevenLabsWebhook.findOne({
             conversation_id: conversationId,
             type: 'post_call_audio',
-            $or: [{ schoolId: schoolObjectId }, { schoolId: { $exists: false } }]
-        }).select('audio_base64 metadata agent_id').lean();
+            schoolId: schoolObjectId,
+        }).select('audio_base64').lean();
 
         if (audioWebhook && audioWebhook.audio_base64) {
-            const school = await School.findById(schoolId).select('aiNumber elevenlabsAgentId').lean();
-            const normalizedSchoolNum = school.aiNumber ? school.aiNumber.replace(/\D/g, '') : '';
-            const whToNum = audioWebhook.metadata?.phone_call?.to_number ? audioWebhook.metadata.phone_call.to_number.replace(/\D/g, '') : '';
-
-            if (audioWebhook.schoolId
-                || (normalizedSchoolNum && whToNum.includes(normalizedSchoolNum))
-                || (school.elevenlabsAgentId && audioWebhook.agent_id === school.elevenlabsAgentId)) {
-                console.log(`[Audio] Serving from cache: ${conversationId}`);
-                const audioBuffer = Buffer.from(audioWebhook.audio_base64, 'base64');
-                res.set('Content-Type', 'audio/mpeg');
-                return res.send(audioBuffer);
-            }
+            console.log(`[Audio] Serving from cache: ${conversationId}`);
+            const audioBuffer = Buffer.from(audioWebhook.audio_base64, 'base64');
+            res.set('Content-Type', 'audio/mpeg');
+            return res.send(audioBuffer);
         }
 
         // ── Strategy 2: Mock/Test Fallback ────────────────

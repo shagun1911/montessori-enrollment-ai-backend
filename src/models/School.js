@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const schoolSchema = new mongoose.Schema({
     name: { type: String, required: true },
     aiNumber: { type: String, default: '' },
+    /** Set when aiNumber first becomes non-empty or changes (digits). Used to exclude pre-assignment VoiceAI history when a number is reused. */
+    aiNumberAssignedAt: { type: Date, default: null },
     routingNumber: { type: String, default: '' },
     escalationNumber: { type: String, default: '' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },

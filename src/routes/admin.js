@@ -17,6 +17,7 @@ const BillingTransaction = require('../models/BillingTransaction');
 const MinuteLedger = require('../models/MinuteLedger');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 const { importSipTrunk, deletePhoneNumber, updatePhoneNumber, patchAgentPrompt, APPOINTMENT_AGENT_PROMPT } = require('../utils/elevenlabs');
+const { aiNumberAssignmentPatch, normalizeAiDigits } = require('../utils/aiNumberOwnership');
 
 const router = express.Router();
 
@@ -417,6 +418,9 @@ router.post('/schools', async (req, res) => {
             elevenlabsAgentId: elevenlabsAgentId || '',
             status: 'active',
         });
+        if (normalizeAiDigits(school.aiNumber)) {
+            school.aiNumberAssignedAt = new Date();
+        }
 
         // Auto-correct timezone based on address
         if (address) {
@@ -661,7 +665,14 @@ router.put('/schools/:id', async (req, res) => {
                 console.log(`[Admin] Auto-updated timezone for ${school.name} to ${detectedTz}`);
             }
         }
-        if (aiNumber !== undefined) school.aiNumber = aiNumber;
+        if (aiNumber !== undefined) {
+            const previousAi = school.aiNumber;
+            school.aiNumber = aiNumber;
+            const patch = aiNumberAssignmentPatch(previousAi, aiNumber);
+            if (patch.aiNumberAssignedAt !== undefined) {
+                school.aiNumberAssignedAt = patch.aiNumberAssignedAt;
+            }
+        }
         if (routingNumber !== undefined) school.routingNumber = routingNumber;
         if (escalationNumber !== undefined) school.escalationNumber = escalationNumber;
         if (script !== undefined) school.script = script;
@@ -750,7 +761,8 @@ router.delete('/phone-numbers/:id', async (req, res) => {
         if (numDoc.schoolId) {
             await School.findByIdAndUpdate(numDoc.schoolId, {
                 aiNumber: '',
-                agentPhoneNumberId: ''
+                agentPhoneNumberId: '',
+                aiNumberAssignedAt: null,
             });
         }
 
@@ -797,8 +809,13 @@ router.post('/schools/:id/assign-number', async (req, res) => {
             );
 
             // 3. Clear School record association
+            const previousAi = school.aiNumber;
             school.aiNumber = '';
             school.agentPhoneNumberId = '';
+            const unassignPatch = aiNumberAssignmentPatch(previousAi, '');
+            if (unassignPatch.aiNumberAssignedAt !== undefined) {
+                school.aiNumberAssignedAt = unassignPatch.aiNumberAssignedAt;
+            }
             await school.save();
 
             return res.json({ success: true, message: 'Phone number unassigned successfully' });
@@ -832,8 +849,13 @@ router.post('/schools/:id/assign-number', async (req, res) => {
         }
 
         // 2. Perform local assignment
+        const previousAi = school.aiNumber;
         school.aiNumber = phoneNum.phone_number;
         school.agentPhoneNumberId = phoneNum.phone_number_id;
+        const assignPatch = aiNumberAssignmentPatch(previousAi, school.aiNumber);
+        if (assignPatch.aiNumberAssignedAt !== undefined) {
+            school.aiNumberAssignedAt = assignPatch.aiNumberAssignedAt;
+        }
         await school.save();
 
         // 3. Reconcile with ElevenLabs
@@ -1193,9 +1215,10 @@ router.post('/ai-number-requests/:requestId/approve', async (req, res) => {
         request.resolvedAt = new Date();
         await request.save();
 
-        // Update school with AI number
-        await School.findByIdAndUpdate(request.schoolId, { 
-            aiNumber: aiNumber 
+        const schoolBefore = await School.findById(request.schoolId).select('aiNumber').lean();
+        await School.findByIdAndUpdate(request.schoolId, {
+            aiNumber,
+            ...aiNumberAssignmentPatch(schoolBefore?.aiNumber || '', aiNumber),
         });
 
         console.log(`[Admin] AI number request ${requestId} approved. Assigned: ${aiNumber}`);
