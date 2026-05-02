@@ -964,7 +964,6 @@ router.delete('/schools/:id', async (req, res) => {
         const objectId = new mongoose.Types.ObjectId(id);
         await Promise.all([
             User.deleteMany({ schoolId: objectId }),
-            ElevenLabsWebhook.deleteMany({ schoolId: objectId }),
             Integration.deleteMany({ schoolId: objectId }),
             Followup.deleteMany({ schoolId: objectId }),
             FormQuestion.deleteMany({ schoolId: objectId }),
@@ -975,16 +974,8 @@ router.delete('/schools/:id', async (req, res) => {
             TourBooking.deleteMany({ schoolId: objectId }),
             // Clear any imported number assignments in the pool
             PhoneNumber.updateMany({ schoolId: objectId }, { $set: { schoolId: null } }),
-            // Delete ElevenLabs webhook data used by dashboard/insights
-            ElevenLabsWebhook.deleteMany({
-                $or: [
-                    { schoolId: objectId },
-                    ...(schoolAiDigits ? [
-                        { 'metadata.phone_call.agent_number': { $regex: schoolAiDigits } },
-                        { 'metadata.phone_call.to_number': { $regex: schoolAiDigits } },
-                    ] : [])
-                ]
-            }),
+            // Preserve webhook call history so admin consumed-minutes analytics remain historically accurate.
+            // Deleting these records would reduce "Total Minutes" after school deletion.
             // Best-effort: purge VoiceAI logs in benny DB (if present)
             (async () => {
                 if (!voiceAiParticipantId) return;
