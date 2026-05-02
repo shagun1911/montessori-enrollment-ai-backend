@@ -12,6 +12,7 @@ const Referral = require('../models/Referral');
 const ReferralLink = require('../models/ReferralLink');
 const InquirySubmission = require('../models/InquirySubmission');
 const TourBooking = require('../models/TourBooking');
+const MinuteLedger = require('../models/MinuteLedger');
 const ElevenLabsWebhook = require('../models/ElevenLabsWebhook');
 const voiceAISchema = require('../models/VoiceAI');
 const AiNumberRequest = require('../models/AiNumberRequest');
@@ -349,6 +350,7 @@ router.get('/dashboard', async (req, res) => {
             actualToursBooked,
             connectedCalendarCount,
             latestPaidPlanTx,
+            minuteGrantTotals,
         ] = await Promise.all([
             Followup.find(adminEmailQuery)
                 .sort({ createdAt: -1 })
@@ -435,6 +437,33 @@ router.get('/dashboard', async (req, res) => {
                 .select('planKey createdAt')
                 .sort({ createdAt: -1 })
                 .lean(),
+            MinuteLedger.aggregate([
+                { $match: { schoolId: schoolObjectId } },
+                {
+                    $group: {
+                        _id: null,
+                        allPositive: {
+                            $sum: {
+                                $cond: [{ $gt: ['$deltaMinutes', 0] }, '$deltaMinutes', 0],
+                            },
+                        },
+                        topupPositive: {
+                            $sum: {
+                                $cond: [
+                                    {
+                                        $and: [
+                                            { $eq: ['$reason', 'topup'] },
+                                            { $gt: ['$deltaMinutes', 0] },
+                                        ],
+                                    },
+                                    '$deltaMinutes',
+                                    0,
+                                ],
+                            },
+                        },
+                    },
+                },
+            ]),
         ]);
         const hasConnectedCalendar = connectedCalendarCount > 0;
 
@@ -558,6 +587,18 @@ router.get('/dashboard', async (req, res) => {
             ? Number(planDef.includedMinutesPerMonth) || 2
             : 2;
 
+        /** Total minute credits (plan allocations + top-ups, etc.) for "used / total" on the dashboard */
+        const grantRow = minuteGrantTotals[0];
+        const allGrantsSum = grantRow?.allPositive ?? 0;
+        const topupOnlySum = grantRow?.topupPositive ?? 0;
+        let totalMinutesCapacity = allGrantsSum;
+        if (totalMinutesCapacity === 0) {
+            totalMinutesCapacity = includedMinutesPerMonth;
+        } else if (allGrantsSum === topupOnlySum && topupOnlySum > 0) {
+            // Ledger may only show top-ups if monthly plan credits were never posted — include plan allowance.
+            totalMinutesCapacity = includedMinutesPerMonth + topupOnlySum;
+        }
+
         // Filter calls to the selected period
         const periodCalls = calls.filter(c => new Date(c.timestamp) >= periodStart);
         console.log(`[DASHBOARD DEBUG] Total calls: ${calls.length}, Period calls: ${periodCalls.length}`);
@@ -645,7 +686,7 @@ router.get('/dashboard', async (req, res) => {
                     value: actualToursBooked.filter(t => t.scheduledAt >= periodStart && Boolean(t.calendarProvider)).length,
                     icon: 'Calendar'
                 },
-                { label: 'Minutes Consumed', value: `${allTimeMinutes} / ${includedMinutesPerMonth}`, ticker: true, icon: 'Activity' },
+                { label: 'Minutes Consumed', value: `${allTimeMinutes} / ${totalMinutesCapacity}`, ticker: true, icon: 'Activity' },
                 { label: 'Average Call Length', value: avgCallLengthFormatted, icon: 'Clock' },
             ],
             chartData,
